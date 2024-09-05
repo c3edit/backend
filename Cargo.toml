@@ -1,0 +1,7 @@
+[package]
+name = "c3edit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crdts = "7.3.2"

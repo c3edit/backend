@@ -2,5 +2,5 @@
 with pkgs;
   mkShell {
     nativeBuildInputs = [rustc cargo];
-    buildInputs = [];
+    buildInputs = [rustfmt];
   }

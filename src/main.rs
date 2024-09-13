@@ -17,19 +17,22 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 #[tokio::main]
 async fn main() {
     let stream: TcpStream;
+    let id: usize;
 
     let args = std::env::args().collect::<Vec<String>>();
     let server = args.contains(&String::from("server"));
     if server {
         let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
         stream = listener.accept().await.unwrap().0;
+        id = 1;
     } else {
         let mut address = String::new();
         io::stdin().read_line(&mut address).unwrap();
         stream = TcpStream::connect(address.trim()).await.unwrap();
+        id = 2;
     }
 
-    let mut text = Text::new(stream);
+    let mut text = Text::new(id, stream);
 
     text.begin_update_task();
 
@@ -66,46 +69,48 @@ async fn main() {
 }
 
 struct Text {
-    data: Arc<Mutex<List<char, u32>>>,
+    id: usize,
+    data: Arc<Mutex<List<char, usize>>>,
     // I hate Rust sometimes.
     write_socket: tokio_serde::SymmetricallyFramed<
         FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
-        Op<char, u32>,
-        SymmetricalJson<Op<char, u32>>,
+        Op<char, usize>,
+        SymmetricalJson<Op<char, usize>>,
     >,
     read_socket: Option<
         tokio_serde::SymmetricallyFramed<
             FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-            Op<char, u32>,
-            SymmetricalJson<Op<char, u32>>,
+            Op<char, usize>,
+            SymmetricalJson<Op<char, usize>>,
         >,
     >,
 }
 
 impl Text {
-    fn new(socket: TcpStream) -> Self {
+    fn new(id: usize, socket: TcpStream) -> Self {
         socket.set_nodelay(true).unwrap();
         let (read, write) = socket.into_split();
         let read_framed = tokio_serde::SymmetricallyFramed::new(
             FramedRead::new(read, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Op<char, u32>>::default(),
+            SymmetricalJson::<Op<char, usize>>::default(),
         );
         let write_framed = tokio_serde::SymmetricallyFramed::new(
             FramedWrite::new(write, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Op<char, u32>>::default(),
+            SymmetricalJson::<Op<char, usize>>::default(),
         );
         Text {
+            id,
             data: Arc::new(Mutex::new(List::new())),
             write_socket: write_framed,
             read_socket: Some(read_framed),
         }
     }
 
-    async fn apply_op(&mut self, op: Op<char, u32>) {
+    async fn apply_op(&mut self, op: Op<char, usize>) {
         self.data.lock().await.apply(op);
     }
 
-    async fn broadcast_op(&mut self, op: Op<char, u32>) {
+    async fn broadcast_op(&mut self, op: Op<char, usize>) {
         self.write_socket.send(op).await.unwrap();
     }
 
@@ -113,7 +118,7 @@ impl Text {
         let mut ops: Vec<Op<_, _>> = Vec::new();
 
         for c in s.chars() {
-            let op = self.data.lock().await.append(c, 1);
+            let op = self.data.lock().await.append(c, self.id);
             self.apply_op(op.clone()).await;
             ops.push(op);
         }

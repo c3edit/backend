@@ -18,22 +18,19 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 #[tokio::main]
 async fn main() {
     let stream: TcpStream;
-    let id: usize;
 
     let args = std::env::args().collect::<Vec<String>>();
     let server = args.contains(&String::from("server"));
     if server {
         let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
         stream = listener.accept().await.unwrap().0;
-        id = 1;
     } else {
         let mut address = String::new();
         io::stdin().read_line(&mut address).unwrap();
         stream = TcpStream::connect(address.trim()).await.unwrap();
-        id = 2;
     }
 
-    let mut text = Text::new(id, stream);
+    let mut text = Text::new(stream);
 
     text.begin_update_task();
 
@@ -54,7 +51,6 @@ struct Message {
 }
 
 struct Text {
-    id: usize,
     doc: Arc<Mutex<LoroDoc>>,
     // I hate Rust sometimes.
     write_socket: tokio_serde::SymmetricallyFramed<
@@ -72,7 +68,7 @@ struct Text {
 }
 
 impl Text {
-    fn new(id: usize, socket: TcpStream) -> Self {
+    fn new(socket: TcpStream) -> Self {
         socket.set_nodelay(true).unwrap();
         let (read, write) = socket.into_split();
         let read_framed = tokio_serde::SymmetricallyFramed::new(
@@ -84,7 +80,6 @@ impl Text {
             SymmetricalJson::<Message>::default(),
         );
         Text {
-            id,
             doc: Arc::new(Mutex::new(LoroDoc::new())),
             write_socket: write_framed,
             read_socket: Some(read_framed),

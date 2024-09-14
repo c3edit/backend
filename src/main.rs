@@ -13,7 +13,11 @@ async fn main() {
         let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
         stream = listener.accept().await.unwrap().0;
     } else {
-        stream = TcpStream::connect("localhost:6969").await.unwrap();
+        let mut input = String::new();
+        println!("Enter server IP: ");
+        std::io::stdin().read_line(&mut input).unwrap();
+        let addr = format!("{}:6969", input.trim());
+        stream = TcpStream::connect(&addr).await.unwrap();
     }
 
     let mut client = Client::new(stream);

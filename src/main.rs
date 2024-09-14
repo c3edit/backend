@@ -1,5 +1,6 @@
-use crdts::{list::Op, CmRDT, List};
 use futures::{SinkExt, TryStreamExt};
+use loro::LoroDoc;
+use serde::{Deserialize, Serialize};
 use std::{
     io::{self},
     sync::Arc,
@@ -37,11 +38,12 @@ async fn main() {
     text.begin_update_task();
 
     if server {
-        text.append_string(String::from("Hello world")).await;
+        text.append_string("Hello world").await;
     } else {
-        text.append_string(String::from("Foobar")).await;
+        text.append_string("Foobar").await;
     }
 
+    text.broadcast_changes().await;
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     println!("After update: {:?}", text.read().await);
 
@@ -68,20 +70,25 @@ async fn main() {
     // println!("{:?}", s);
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Message {
+    data: Vec<u8>,
+}
+
 struct Text {
     id: usize,
-    data: Arc<Mutex<List<char, usize>>>,
+    doc: Arc<Mutex<LoroDoc>>,
     // I hate Rust sometimes.
     write_socket: tokio_serde::SymmetricallyFramed<
         FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
-        Op<char, usize>,
-        SymmetricalJson<Op<char, usize>>,
+        Message,
+        SymmetricalJson<Message>,
     >,
     read_socket: Option<
         tokio_serde::SymmetricallyFramed<
             FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-            Op<char, usize>,
-            SymmetricalJson<Op<char, usize>>,
+            Message,
+            SymmetricalJson<Message>,
         >,
     >,
 }
@@ -92,55 +99,45 @@ impl Text {
         let (read, write) = socket.into_split();
         let read_framed = tokio_serde::SymmetricallyFramed::new(
             FramedRead::new(read, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Op<char, usize>>::default(),
+            SymmetricalJson::<Message>::default(),
         );
         let write_framed = tokio_serde::SymmetricallyFramed::new(
             FramedWrite::new(write, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Op<char, usize>>::default(),
+            SymmetricalJson::<Message>::default(),
         );
         Text {
             id,
-            data: Arc::new(Mutex::new(List::new())),
+            doc: Arc::new(Mutex::new(LoroDoc::new())),
             write_socket: write_framed,
             read_socket: Some(read_framed),
         }
     }
 
-    async fn apply_op(&mut self, op: Op<char, usize>) {
-        self.data.lock().await.apply(op);
+    async fn broadcast_changes(&mut self) {
+        let message = Message {
+            data: self.doc.lock().await.export_from(&Default::default()),
+        };
+        self.write_socket.send(message).await.unwrap();
     }
 
-    async fn broadcast_op(&mut self, op: Op<char, usize>) {
-        self.write_socket.send(op).await.unwrap();
-    }
-
-    async fn append_string(&mut self, s: String) {
-        let mut ops: Vec<Op<_, _>> = Vec::new();
-
-        for c in s.chars() {
-            let op = self.data.lock().await.append(c, self.id);
-            self.apply_op(op.clone()).await;
-            ops.push(op);
-        }
-
-        for op in ops {
-            self.broadcast_op(op).await;
-        }
+    async fn append_string(&mut self, s: &str) {
+        let doc = self.doc.lock().await;
+        doc.get_text("text").insert(0, s).unwrap();
     }
 
     fn begin_update_task(&mut self) {
         let mut socket = self.read_socket.take().unwrap();
-        let data = self.data.clone();
+        let data = self.doc.clone();
 
         tokio::spawn(async move {
-            while let Some(op) = socket.try_next().await.unwrap() {
-                println!("Received op: {:?}", op);
-                data.lock().await.apply(op);
+            while let Some(message) = socket.try_next().await.unwrap() {
+                println!("Received message: {:?}", message);
+                data.lock().await.import(&message.data).unwrap();
             }
         });
     }
 
     async fn read(&self) -> String {
-        self.data.lock().await.iter().collect()
+        self.doc.lock().await.get_text("text").to_string()
     }
 }

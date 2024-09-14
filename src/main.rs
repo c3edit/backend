@@ -20,16 +20,6 @@ async fn main() {
 
     client.begin_update_task();
 
-    // if server {
-    //     text.append_string("Hello world").await;
-    // } else {
-    //     text.append_string("Foobar").await;
-    // }
-    //
-    // text.broadcast_changes().await;
-    // tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    // println!("After update: {:?}", text.read().await);
-
     let mut input = String::new();
     loop {
         println!("Current text: {:?}", client.read().await);

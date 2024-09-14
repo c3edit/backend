@@ -67,6 +67,11 @@ impl Client {
         doc.get_text("text").insert(idx, s).unwrap();
     }
 
+    pub async fn delete_string(&mut self, idx: usize, len: usize) {
+        let doc = self.doc.lock().await;
+        doc.get_text("text").delete(idx, len).unwrap();
+    }
+
     pub fn begin_update_task(&mut self) {
         let mut socket = self.read_socket.take().unwrap();
         let data = self.doc.clone();

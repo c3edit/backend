@@ -41,10 +41,25 @@ async fn main() {
             continue;
         }
 
-        let (index, text) = input.split_at(input.find(' ').unwrap());
-        let index = index.trim().parse::<usize>().unwrap();
-
-        client.insert_string(index, text).await;
+        let (command, rest) = input.split_at(2);
+        match command {
+            "i " => {
+                let (index, text) = rest.split_at(rest.find(' ').unwrap());
+                let index = index.trim().parse::<usize>().unwrap();
+                let text = text.trim();
+                client.insert_string(index, text).await;
+            }
+            "d " => {
+                let (begin, len) = rest.split_at(rest.find(' ').unwrap());
+                let begin = begin.trim().parse::<usize>().unwrap();
+                let len = len.trim().parse::<usize>().unwrap();
+                client.delete_string(begin, len).await;
+            }
+            _ => {
+                eprintln!("Invalid command");
+                continue;
+            }
+        }
 
         eprintln!("Broadcasting changes");
         client.broadcast_changes().await;

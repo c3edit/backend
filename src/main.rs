@@ -1,10 +1,7 @@
 use futures::{SinkExt, TryStreamExt};
 use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{self},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tokio::{
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -25,9 +22,7 @@ async fn main() {
         let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
         stream = listener.accept().await.unwrap().0;
     } else {
-        let mut address = String::new();
-        io::stdin().read_line(&mut address).unwrap();
-        stream = TcpStream::connect(address.trim()).await.unwrap();
+        stream = TcpStream::connect("localhost:6969").await.unwrap();
     }
 
     let mut text = Text::new(stream);

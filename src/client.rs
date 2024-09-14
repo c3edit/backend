@@ -62,9 +62,9 @@ impl Client {
         self.write_socket.send(message).await.unwrap();
     }
 
-    pub async fn append_string(&mut self, s: &str) {
+    pub async fn insert_string(&mut self, idx: usize, s: &str) {
         let doc = self.doc.lock().await;
-        doc.get_text("text").insert(0, s).unwrap();
+        doc.get_text("text").insert(idx, s).unwrap();
     }
 
     pub fn begin_update_task(&mut self) {

@@ -1,9 +1,9 @@
 use futures::{SinkExt, TryStreamExt};
-use loro::LoroDoc;
+use loro::{LoroDoc, TextDelta};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 use tokio::{
-    io::{self, AsyncBufReadExt, BufReader},
+    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
@@ -120,6 +120,54 @@ impl Client {
                 }
             }
         });
+    }
+
+    pub async fn begin_stdout_task(&self) {
+        let text = self.doc.lock().await.get_text("text");
+
+        self.doc.lock().await.subscribe(
+            &text.id(),
+            Arc::new(move |change| {
+                if !change.triggered_by.is_import() {
+                    return;
+                }
+
+                let mut changes = Vec::new();
+                for event in change.events {
+                    eprintln!("Received event: {:?}", event);
+                    let diffs = event.diff.as_text().unwrap();
+                    let mut index = 0;
+
+                    for diff in diffs {
+                        match diff {
+                            TextDelta::Retain { retain, .. } => {
+                                index += retain;
+                            }
+                            TextDelta::Insert { insert, .. } => {
+                                changes.push(Change::Insert {
+                                    index,
+                                    text: insert.to_string(),
+                                });
+                            }
+                            TextDelta::Delete { delete, .. } => {
+                                changes.push(Change::Delete {
+                                    index,
+                                    len: *delete,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                eprintln!("Sending changes: {:?}", changes);
+                let mut stdout = std::io::stdout();
+                for change in changes {
+                    let serialized = serde_json::to_string(&change).unwrap();
+                    stdout.write_all(serialized.as_bytes()).unwrap();
+                    stdout.write_all(b"\n").unwrap();
+                }
+            }),
+        );
     }
 
     pub async fn read(&self) -> String {

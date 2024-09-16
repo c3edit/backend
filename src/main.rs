@@ -63,6 +63,7 @@ async fn main() {
         }
     } else {
         client.begin_stdin_task();
+        client.begin_stdout_task().await;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             client.broadcast_changes().await;

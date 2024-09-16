@@ -9,15 +9,19 @@ async fn main() {
 
     let args = std::env::args().collect::<Vec<String>>();
     let cli = args.contains(&String::from("cli"));
+    let server = args.contains(&String::from("server"));
     if cli {
         let mut input = String::new();
         println!("Enter server IP: ");
         std::io::stdin().read_line(&mut input).unwrap();
         let addr = format!("{}:6969", input.trim());
         stream = TcpStream::connect(&addr).await.unwrap();
-    } else {
+    } else if server {
         let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
         stream = listener.accept().await.unwrap().0;
+    } else {
+        let addr = args[1].clone();
+        stream = TcpStream::connect(&addr).await.unwrap();
     }
 
     eprintln!("Connected");

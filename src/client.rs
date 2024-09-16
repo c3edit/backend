@@ -86,7 +86,7 @@ impl Client {
 
         tokio::spawn(async move {
             while let Some(message) = socket.try_next().await.unwrap() {
-                println!("Received message: {:?}", message);
+                eprintln!("Received message: {:?}", message);
                 data.lock().await.import(&message.data).unwrap();
             }
         });

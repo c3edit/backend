@@ -3,6 +3,7 @@ use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
@@ -11,6 +12,13 @@ use tokio::{
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
+pub enum Change {
+    Insert { index: usize, text: String },
+    Delete { index: usize, len: usize },
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Message {
@@ -80,6 +88,36 @@ impl Client {
             while let Some(message) = socket.try_next().await.unwrap() {
                 println!("Received message: {:?}", message);
                 data.lock().await.import(&message.data).unwrap();
+            }
+        });
+    }
+
+    pub fn begin_stdin_task(&mut self) {
+        let data = self.doc.clone();
+
+        tokio::spawn(async move {
+            let stdin = BufReader::new(io::stdin());
+            let mut lines = stdin.lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                let change = serde_json::from_str::<Change>(&line).unwrap();
+                eprintln!("Received change: {:?}", change);
+                match change {
+                    Change::Insert { index, text } => {
+                        data.lock()
+                            .await
+                            .get_text("text")
+                            .insert(index, &text)
+                            .unwrap();
+                    }
+                    Change::Delete { index, len } => {
+                        data.lock()
+                            .await
+                            .get_text("text")
+                            .delete(index, len)
+                            .unwrap();
+                    }
+                }
             }
         });
     }

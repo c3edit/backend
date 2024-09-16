@@ -5,7 +5,6 @@
 ;; Package-Requires: ((emacs "25.1"))
 ;; Homepage: https://github.com/adam-zhang-lcps/c3edit
 
-
 ;; This file is not part of GNU Emacs
 
 ;; This program is free software: you can redistribute it and/or modify
@@ -31,25 +30,41 @@
 (require 'json)
 (require 'map)
 
-(setq my/test (make-process
-               :name "c3edit"
-               :command '("~/git/c3edit/target/debug/c3edit")
-               :filter #'my/c3-filter
-               :stderr (get-buffer-create "*test*")))
+(defvar c3edit--process nil
+  "Process for c3edit backend.")
 
-(kill-process my/test)
+(defvar c3edit--synced-changes-p nil
+  "Whether current changes being inserted are from backend.
+Dynamically-scoped variable to prevent infinitely-recursing changes.")
 
-(process-send-string my/test "hello world\n")
-(process-send-eof my/test)
+(defun c3edit-start (&optional server)
+  "Start the c3edit backend.
+Start as server if SERVER is non-nil."
+  (interactive (list (y-or-n-p "Start as server?")))
+  (let ((address)
+        (command '("~/git/c3edit/target/debug/c3edit")))
+    (if server
+        (setq command (append command (list "server")))
+      (setq address (read-string "Address: "))
+      (setq command (append command (list address))))
+    (setq c3edit--process (make-process
+                           :name "c3edit"
+                           :command command
+                           :filter #'c3edit--process-filter
+                           :stderr (get-buffer-create "*c3edit log*")))))
 
-(defvar my/synced-changes nil)
+(defun c3edit-stop ()
+  "Kill c3edit backend."
+  (interactive)
+  (kill-process c3edit--process))
 
-(defun my/c3-filter (process text)
-  "Coding go brrrrr."
+(defun c3edit--process-filter (_process text)
+  "Process filter for c3edit backend messages.
+Processes message from TEXT."
   (message "Received data: %s" text)
   (let* ((data (json-read-from-string text))
-         (my/synced-changes t))
-    (with-current-buffer "test"
+         (c3edit--synced-changes-p t))
+    (with-current-buffer "c3edit"
       (save-excursion
         (pcase (caar data)
           ('insert
@@ -62,21 +77,22 @@
                (map-nested-elt data '(delete len))
                1))))))))
 
-(defun my/change-test (beg end len)
-  "Test time!"
-  (when-let (((not my/synced-changes))
+(defun c3edit--after-change-function (beg end len)
+  "Update c3edit backend after a change to buffer.
+BEG, END, and LEN are as documented in `after-change-functions'."
+  (when-let (((not c3edit--synced-changes-p))
              ((string= (buffer-name (current-buffer))
-                       "test"))
+                       "c3edit"))
              (data ""))
     (if (= beg end)
         (setq data `((delete . ((index . ,(1- beg))
                                 (len . ,len)))))
       (setq data `((insert . ((index . ,(1- beg))
                               (text . ,(buffer-substring-no-properties beg end)))))))
-    (process-send-string my/test
+    (process-send-string c3edit--process
                          (format "%s\n" (json-encode data)))))
 
-(add-hook 'after-change-functions #'my/change-test)
+(add-hook 'after-change-functions #'c3edit--after-change-function)
 
 (provide 'c3edit)
 

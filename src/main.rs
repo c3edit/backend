@@ -1,26 +1,30 @@
 mod client;
 
+use clap::Parser;
 use client::Client;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
+
+/// Real-time cross-editor collaborative editing backend.
+#[derive(Debug, Parser)]
+#[command(version, about)]
+struct Args {
+    /// Address to listen to incoming connections on.
+    #[arg(short, long, default_value = "0.0.0.0")]
+    address: String,
+
+    /// Port to listen to incoming connections on.
+    #[arg(short, long, default_value = "6969")]
+    port: u16,
+}
 
 #[tokio::main]
 async fn main() {
-    let stream: TcpStream;
+    let args = Args::parse();
 
-    let args = std::env::args().collect::<Vec<String>>();
-    let server = args.contains(&String::from("server"));
-    if server {
-        let listener = TcpListener::bind("0.0.0.0:6969").await.unwrap();
-        stream = listener.accept().await.unwrap().0;
-    } else {
-        let addr = args[1].clone();
-        stream = TcpStream::connect(&addr).await.unwrap();
-    }
+    let addr = format!("{}:{}", args.address, args.port);
+    let listener = TcpListener::bind(&addr).await.unwrap();
 
-    eprintln!("Connected");
+    let client = Client::new(listener);
 
-    let client = Client::new(stream);
-
-    eprintln!("Beginning event loop");
     client.begin_event_loop().await;
 }

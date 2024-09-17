@@ -1,14 +1,15 @@
 use futures::{SinkExt, TryStreamExt};
 use loro::{LoroDoc, TextDelta};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, sync::Arc};
+use std::{io::Write, sync::Arc, time::Duration};
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
-        TcpStream,
+        TcpListener, TcpStream,
     },
     sync::mpsc::{Receiver, Sender},
+    time::timeout,
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -29,6 +30,7 @@ type ReadSocket = tokio_serde::SymmetricallyFramed<
 #[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
 #[serde(tag = "type")]
 enum ClientMessage {
+    AddPeer { address: String },
     CreateDocument { initial_content: String },
     Change { change: Change },
 }
@@ -41,35 +43,21 @@ enum Change {
     Delete { index: usize, len: usize },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum BackendMessage {
     DocumentSync { data: Vec<u8> },
 }
 
 pub struct Client {
     doc: LoroDoc,
-    write_socket: WriteSocket,
-    read_socket: ReadSocket,
+    listener: TcpListener,
 }
 
 impl Client {
-    pub fn new(socket: TcpStream) -> Self {
-        socket.set_nodelay(true).unwrap();
-
-        let (read, write) = socket.into_split();
-        let read_framed = tokio_serde::SymmetricallyFramed::new(
-            FramedRead::new(read, LengthDelimitedCodec::new()),
-            SymmetricalJson::<BackendMessage>::default(),
-        );
-        let write_framed = tokio_serde::SymmetricallyFramed::new(
-            FramedWrite::new(write, LengthDelimitedCodec::new()),
-            SymmetricalJson::<BackendMessage>::default(),
-        );
-
+    pub fn new(listener: TcpListener) -> Self {
         Client {
             doc: LoroDoc::new(),
-            write_socket: write_framed,
-            read_socket: (read_framed),
+            listener,
         }
     }
 
@@ -78,10 +66,14 @@ impl Client {
         let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (incoming_task_channel_tx, mut incoming_task_channel_rx) =
             tokio::sync::mpsc::channel(10);
+        let (incoming_task_socket_channel_tx, incoming_task_socket_channel_rx) =
+            tokio::sync::mpsc::channel(1);
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
+        let (outgoing_task_socket_channel_tx, outgoing_task_socket_channel_rx) =
+            tokio::sync::mpsc::channel(1);
 
-        Client::begin_incoming_task(incoming_task_channel_tx, self.read_socket);
-        Client::begin_outgoing_task(outgoing_task_channel_rx, self.write_socket);
+        Client::begin_incoming_task(incoming_task_channel_tx, incoming_task_socket_channel_rx);
+        Client::begin_outgoing_task(outgoing_task_channel_rx, outgoing_task_socket_channel_rx);
         Client::begin_stdin_task(stdin_task_channel_tx);
         Client::begin_stdout_task(stdout_task_channel_rx);
 
@@ -136,10 +128,42 @@ impl Client {
         eprintln!("Entering main loop");
         loop {
             tokio::select! {
+                Ok((socket, _)) = self.listener.accept() => {
+                    let (read, write) = socket.into_split();
+
+                    let read_framed = tokio_serde::SymmetricallyFramed::new(
+                        FramedRead::new(read, LengthDelimitedCodec::new()),
+                        SymmetricalJson::<BackendMessage>::default(),
+                    );
+                    let write_framed = tokio_serde::SymmetricallyFramed::new(
+                        FramedWrite::new(write, LengthDelimitedCodec::new()),
+                        SymmetricalJson::<BackendMessage>::default(),
+                    );
+
+                    incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
+                    outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
+                },
                 Some(message) = stdin_task_channel_rx.recv() => {
                     eprintln!("Main task received from stdin: {:?}", message);
 
                     match message {
+                        ClientMessage::AddPeer{address} => {
+                            let socket = TcpStream::connect(address).await.unwrap();
+                            socket.set_nodelay(true).unwrap();
+
+                            let (read, write) = socket.into_split();
+                            let read_framed = tokio_serde::SymmetricallyFramed::new(
+                                FramedRead::new(read, LengthDelimitedCodec::new()),
+                                SymmetricalJson::<BackendMessage>::default(),
+                            );
+                            let write_framed = tokio_serde::SymmetricallyFramed::new(
+                                FramedWrite::new(write, LengthDelimitedCodec::new()),
+                                SymmetricalJson::<BackendMessage>::default(),
+                            );
+
+                            incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
+                            outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
+                        },
                         ClientMessage::Change{change} =>  {
                             match change {
                                 Change::Insert { index, text } => {
@@ -173,22 +197,51 @@ impl Client {
         }
     }
 
-    fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket: ReadSocket) {
+    fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>) {
         tokio::spawn(async move {
-            while let Some(message) = socket.try_next().await.unwrap() {
-                eprintln!("Received: {:?}", message);
-                let BackendMessage::DocumentSync { data } = message;
-                tx.send(data).await.unwrap();
+            let mut sockets = Vec::new();
+
+            loop {
+                if let Ok(socket) = socket_rx.try_recv() {
+                    sockets.push(socket);
+                }
+                for socket in sockets.iter_mut() {
+                    // HACK This is ugly, but I don't know how to check if
+                    // there's data in the socket without awaiting it. We cannot
+                    // simply poll all sockets concurrently, because we need to
+                    // be able to borrow `sockets` mutably above.
+                    if let Some(message) = timeout(Duration::from_millis(10), socket.try_next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                    {
+                        eprintln!("Received: {:?}", message);
+                        let BackendMessage::DocumentSync { data } = message;
+                        tx.send(data).await.unwrap();
+                    }
+                }
             }
         });
     }
 
-    fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket: WriteSocket) {
+    fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket_rx: Receiver<WriteSocket>) {
         tokio::spawn(async move {
-            while let Some(data) = rx.recv().await {
-                let message = BackendMessage::DocumentSync { data };
-                eprintln!("Sending: {:?}", message);
-                socket.send(message).await.unwrap();
+            let mut sockets = Vec::new();
+
+            loop {
+                tokio::select! {
+                    Some(socket) = socket_rx.recv() => {
+                        sockets.push(socket);
+                    },
+                    Some(data) = rx.recv() => {
+                        let message = BackendMessage::DocumentSync { data };
+                        eprintln!("Sending: {:?}", message);
+
+                        for socket in sockets.iter_mut() {
+                            socket.send(message.clone()).await.unwrap();
+                        }
+                    }
+                }
             }
         });
     }

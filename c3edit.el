@@ -67,24 +67,40 @@ Start as server if SERVER is non-nil."
   (setq c3edit--process nil)
   (message "Killed c3edit backend"))
 
+(defun c3edit--json-read-all (string)
+  "Read all JSON objects from STRING.
+Returns list of read objects."
+  (let (data)
+    (with-temp-buffer
+      (insert string)
+      (goto-char (point-min))
+      (condition-case _err
+          (while t
+            (push (json-read) data))
+        (json-end-of-file)))
+    (nreverse data)))
+
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
 Processes message from TEXT."
   (message "Received data: %s" text)
-  (let* ((data (json-read-from-string text))
+  ;; Emacs process handling may return many lines at once, we have to make sure
+  ;; to read them all in order.
+  (let* ((data (c3edit--json-read-all text))
          (c3edit--synced-changes-p t))
     (with-current-buffer "c3edit"
       (save-excursion
-        (pcase (caar data)
-          ('insert
-           (goto-char (1+ (map-nested-elt data '(insert index))))
-           (insert (map-nested-elt data '(insert text))))
-          ('delete
-           (delete-region
-            (1+ (map-nested-elt data '(delete index)))
-            (+ (map-nested-elt data '(delete index))
-               (map-nested-elt data '(delete len))
-               1))))))))
+        (dolist (change data)
+          (pcase (caar change)
+            ('insert
+             (goto-char (1+ (map-nested-elt change '(insert index))))
+             (insert (map-nested-elt change '(insert text))))
+            ('delete
+             (delete-region
+              (1+ (map-nested-elt change '(delete index)))
+              (+ (map-nested-elt change '(delete index))
+                 (map-nested-elt change '(delete len))
+                 1)))))))))
 
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.

@@ -77,12 +77,15 @@ Start as server if SERVER is non-nil."
   (setq c3edit--process nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function))
 
+(defsubst c3edit--send-message (message)
+  "Serialize MESSAGE into JSON and send it to the c3edit backend."
+  (process-send-string
+   c3edit--process (concat (json-encode message) "\n")))
+
 (defun c3edit--send-initial-data ()
   "Send initial buffer contents to backend process."
-  (process-send-string c3edit--process
-                       (format "%s\n"
-                               (json-encode `((type . "create_document")
-                                              (initial_content . ,(buffer-string)))))))
+  (c3edit--send-message `((type . "create_document")
+                          (initial_content . ,(buffer-string)))))
 
 (defun c3edit--json-read-all (string)
   "Read all JSON objects from STRING.
@@ -139,10 +142,8 @@ BEG, END, and LEN are as documented in `after-change-functions'."
         (setq change `((type . "insert")
                        (index . ,(1- beg))
                        (text . ,(buffer-substring-no-properties beg end)))))
-      (process-send-string c3edit--process
-                           (format "%s\n"
-                                   (json-encode `((type . "change")
-                                                  (change . ,change))))))))
+      (c3edit--send-message `((type . "change")
+                              (change . ,change))))))
 
 (provide 'c3edit)
 

@@ -3,15 +3,30 @@ use loro::{LoroDoc, TextDelta};
 use serde::{Deserialize, Serialize};
 use std::{io::Write, sync::Arc};
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{self, AsyncBufReadExt, BufReader},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
     },
-    sync::Mutex,
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+
+// I hate Rust sometimes.
+type WriteSocket = tokio_serde::SymmetricallyFramed<
+    FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
+    Message,
+    SymmetricalJson<Message>,
+>;
+type ReadSocket = tokio_serde::SymmetricallyFramed<
+    FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
+    Message,
+    SymmetricalJson<Message>,
+>;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
@@ -27,19 +42,8 @@ struct Message {
 
 pub struct Client {
     doc: Arc<Mutex<LoroDoc>>,
-    // I hate Rust sometimes.
-    write_socket: tokio_serde::SymmetricallyFramed<
-        FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
-        Message,
-        SymmetricalJson<Message>,
-    >,
-    read_socket: Option<
-        tokio_serde::SymmetricallyFramed<
-            FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-            Message,
-            SymmetricalJson<Message>,
-        >,
-    >,
+    write_socket: WriteSocket,
+    read_socket: ReadSocket,
 }
 
 impl Client {
@@ -59,74 +63,29 @@ impl Client {
         Client {
             doc: Arc::new(Mutex::new(LoroDoc::new())),
             write_socket: write_framed,
-            read_socket: Some(read_framed),
+            read_socket: (read_framed),
         }
     }
 
-    pub async fn broadcast_changes(&mut self) {
-        let message = Message {
-            data: self.doc.lock().await.export_from(&Default::default()),
-        };
-        self.write_socket.send(message).await.unwrap();
+    pub async fn read(&self) -> String {
+        self.doc.lock().await.get_text("text").to_string()
     }
 
-    pub async fn insert_string(&mut self, idx: usize, s: &str) {
-        let doc = self.doc.lock().await;
-        doc.get_text("text").insert(idx, s).unwrap();
-    }
+    pub async fn begin_event_loop(self) {
+        let (stdin_task_channel_tx, mut stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
+        let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
+        let (incoming_task_channel_tx, mut incoming_task_channel_rx) =
+            tokio::sync::mpsc::channel(10);
+        let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
 
-    pub async fn delete_string(&mut self, idx: usize, len: usize) {
-        let doc = self.doc.lock().await;
-        doc.get_text("text").delete(idx, len).unwrap();
-    }
+        Client::begin_incoming_task(incoming_task_channel_tx, self.read_socket);
+        Client::begin_outgoing_task(outgoing_task_channel_rx, self.write_socket);
+        Client::begin_stdin_task(stdin_task_channel_tx);
+        Client::begin_stdout_task(stdout_task_channel_rx);
 
-    pub fn begin_update_task(&mut self) {
-        let mut socket = self.read_socket.take().unwrap();
-        let data = self.doc.clone();
-
-        tokio::spawn(async move {
-            while let Some(message) = socket.try_next().await.unwrap() {
-                eprintln!("Received message: {:?}", message);
-                data.lock().await.import(&message.data).unwrap();
-            }
-        });
-    }
-
-    pub fn begin_stdin_task(&mut self) {
-        let data = self.doc.clone();
-
-        tokio::spawn(async move {
-            let stdin = BufReader::new(io::stdin());
-            let mut lines = stdin.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                let change = serde_json::from_str::<Change>(&line).unwrap();
-                eprintln!("Received change: {:?}", change);
-                match change {
-                    Change::Insert { index, text } => {
-                        data.lock()
-                            .await
-                            .get_text("text")
-                            .insert(index, &text)
-                            .unwrap();
-                    }
-                    Change::Delete { index, len } => {
-                        data.lock()
-                            .await
-                            .get_text("text")
-                            .delete(index, len)
-                            .unwrap();
-                    }
-                }
-            }
-        });
-    }
-
-    pub async fn begin_stdout_task(&self) {
-        let text = self.doc.lock().await.get_text("text");
-
+        let id = self.doc.lock().await.get_text("text").id();
         self.doc.lock().await.subscribe(
-            &text.id(),
+            &id,
             Arc::new(move |change| {
                 if !change.triggered_by.is_import() {
                     return;
@@ -134,7 +93,6 @@ impl Client {
 
                 let mut changes = Vec::new();
                 for event in change.events {
-                    eprintln!("Received event: {:?}", event);
                     let diffs = event.diff.as_text().unwrap();
                     let mut index = 0;
 
@@ -159,18 +117,96 @@ impl Client {
                     }
                 }
 
-                eprintln!("Sending changes: {:?}", changes);
-                let mut stdout = std::io::stdout();
-                for change in changes {
-                    let serialized = serde_json::to_string(&change).unwrap();
-                    stdout.write_all(serialized.as_bytes()).unwrap();
-                    stdout.write_all(b"\n").unwrap();
-                }
+                // We have to spawn a new task here because this callback can't
+                // be async, and we can't use `blocking_send` because this runs
+                // inside a Tokio thread, which should never block (and will
+                // panic if it does).
+                let stdout_task_channel_tx = stdout_task_channel_tx.clone();
+                tokio::spawn(async move {
+                    for change in changes {
+                        stdout_task_channel_tx.send(change).await.unwrap();
+                    }
+                });
             }),
         );
+
+        eprintln!("Entering main loop");
+        loop {
+            while let Ok(change) = stdin_task_channel_rx.try_recv() {
+                eprintln!("Main task received from stdin: {:?}", change);
+                match change {
+                    Change::Insert { index, text } => {
+                        self.doc
+                            .lock()
+                            .await
+                            .get_text("text")
+                            .insert(index, &text)
+                            .unwrap();
+                    }
+                    Change::Delete { index, len } => {
+                        self.doc
+                            .lock()
+                            .await
+                            .get_text("text")
+                            .delete(index, len)
+                            .unwrap();
+                    }
+                }
+                outgoing_task_channel_tx
+                    .send(self.doc.lock().await.export_from(&Default::default()))
+                    .await
+                    .unwrap();
+            }
+
+            while let Ok(data) = incoming_task_channel_rx.try_recv() {
+                eprintln!("Main task received from socket: {:?}", data);
+                self.doc.lock().await.import(&data).unwrap();
+            }
+        }
     }
 
-    pub async fn read(&self) -> String {
-        self.doc.lock().await.get_text("text").to_string()
+    fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket: ReadSocket) {
+        tokio::spawn(async move {
+            while let Some(message) = socket.try_next().await.unwrap() {
+                eprintln!("Received: {:?}", message);
+                tx.send(message.data).await.unwrap();
+            }
+        });
+    }
+
+    fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket: WriteSocket) {
+        tokio::spawn(async move {
+            while let Some(data) = rx.recv().await {
+                let message = Message { data };
+                eprintln!("Sending: {:?}", message);
+                socket.send(message).await.unwrap();
+            }
+        });
+    }
+
+    fn begin_stdin_task(tx: Sender<Change>) {
+        tokio::spawn(async move {
+            let stdin = BufReader::new(io::stdin());
+            let mut lines = stdin.lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                let change = serde_json::from_str::<Change>(&line).unwrap();
+                eprintln!("Received from stdin: {:?}", change);
+                tx.send(change).await.unwrap();
+            }
+        });
+    }
+
+    fn begin_stdout_task(mut rx: Receiver<Change>) {
+        tokio::spawn(async move {
+            while let Some(change) = rx.recv().await {
+                let serialized = serde_json::to_string(&change).unwrap();
+                eprintln!("Sending to stdout: {:?}", serialized);
+                // TODO should this be using Tokio's stdout?
+                let mut stdout = std::io::stdout();
+                stdout.write_all(serialized.as_bytes()).unwrap();
+                stdout.write_all(b"\n").unwrap();
+            }
+        });
     }
 }

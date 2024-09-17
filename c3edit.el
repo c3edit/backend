@@ -30,6 +30,9 @@
 (require 'json)
 (require 'map)
 
+(defcustom c3edit-backend-path (executable-find "c3edit")
+  "Path to c3edit backend binary.")
+
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
@@ -42,7 +45,7 @@ Dynamically-scoped variable to prevent infinitely-recursing changes.")
 Start as server if SERVER is non-nil."
   (interactive (list (y-or-n-p "Start as server?")))
   (let ((address)
-        (command '("~/git/c3edit/target/release/c3edit")))
+        (command (list c3edit-backend-path)))
     (if server
         (setq command (append command (list "server")))
       (setq address (read-string "Address: "))

@@ -30,8 +30,13 @@
 (require 'json)
 (require 'map)
 
+(defgroup c3edit nil
+  "Real-time cross-editor collaborative editing."
+  :group 'editing)
+
 (defcustom c3edit-backend-path (executable-find "c3edit")
-  "Path to c3edit backend binary.")
+  "Path to c3edit backend binary."
+  :type 'path)
 
 (defvar c3edit--process nil
   "Process for c3edit backend.")

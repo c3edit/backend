@@ -16,25 +16,33 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 // I hate Rust sometimes.
 type WriteSocket = tokio_serde::SymmetricallyFramed<
     FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
-    Message,
-    SymmetricalJson<Message>,
+    BackendMessage,
+    SymmetricalJson<BackendMessage>,
 >;
 type ReadSocket = tokio_serde::SymmetricallyFramed<
     FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-    Message,
-    SymmetricalJson<Message>,
+    BackendMessage,
+    SymmetricalJson<BackendMessage>,
 >;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
-pub enum Change {
+#[serde(tag = "type")]
+enum ClientMessage {
+    Change { change: Change },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
+#[serde(tag = "type")]
+enum Change {
     Insert { index: usize, text: String },
     Delete { index: usize, len: usize },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct Message {
-    data: Vec<u8>,
+#[derive(Debug, Serialize, Deserialize)]
+enum BackendMessage {
+    DocumentSync { data: Vec<u8> },
 }
 
 pub struct Client {
@@ -50,11 +58,11 @@ impl Client {
         let (read, write) = socket.into_split();
         let read_framed = tokio_serde::SymmetricallyFramed::new(
             FramedRead::new(read, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Message>::default(),
+            SymmetricalJson::<BackendMessage>::default(),
         );
         let write_framed = tokio_serde::SymmetricallyFramed::new(
             FramedWrite::new(write, LengthDelimitedCodec::new()),
-            SymmetricalJson::<Message>::default(),
+            SymmetricalJson::<BackendMessage>::default(),
         );
 
         Client {
@@ -117,7 +125,8 @@ impl Client {
                 let stdout_task_channel_tx = stdout_task_channel_tx.clone();
                 tokio::spawn(async move {
                     for change in changes {
-                        stdout_task_channel_tx.send(change).await.unwrap();
+                        let message = ClientMessage::Change { change };
+                        stdout_task_channel_tx.send(message).await.unwrap();
                     }
                 });
             }),
@@ -126,25 +135,27 @@ impl Client {
         eprintln!("Entering main loop");
         loop {
             tokio::select! {
-                Some(change) = stdin_task_channel_rx.recv() => {
-                        eprintln!("Main task received from stdin: {:?}", change);
-                        match change {
-                            Change::Insert { index, text } => {
-                                self.doc.get_text("text").insert(index, &text).unwrap();
-                            }
-                            Change::Delete { index, len } => {
-                                self.doc.get_text("text").delete(index, len).unwrap();
-                            }
+                Some(message) = stdin_task_channel_rx.recv() => {
+                    eprintln!("Main task received from stdin: {:?}", message);
+                    let ClientMessage::Change { change } = message;
+                    match change {
+                        Change::Insert { index, text } => {
+                            self.doc.get_text("text").insert(index, &text).unwrap();
                         }
-                        outgoing_task_channel_tx
-                            .send(self.doc.export_from(&Default::default()))
-                            .await
-                            .unwrap();
+                        Change::Delete { index, len } => {
+                            self.doc.get_text("text").delete(index, len).unwrap();
+                        }
+                    }
+
+                    outgoing_task_channel_tx
+                    .send(self.doc.export_from(&Default::default()))
+                    .await
+                    .unwrap();
                 },
 
                 Some(data) = incoming_task_channel_rx.recv() => {
-                        eprintln!("Main task received from socket: {:?}", data);
-                        self.doc.import(&data).unwrap();
+                    eprintln!("Main task received from socket: {:?}", data);
+                    self.doc.import(&data).unwrap();
                 }
             }
         }
@@ -154,7 +165,8 @@ impl Client {
         tokio::spawn(async move {
             while let Some(message) = socket.try_next().await.unwrap() {
                 eprintln!("Received: {:?}", message);
-                tx.send(message.data).await.unwrap();
+                let BackendMessage::DocumentSync { data } = message;
+                tx.send(data).await.unwrap();
             }
         });
     }
@@ -162,30 +174,30 @@ impl Client {
     fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket: WriteSocket) {
         tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
-                let message = Message { data };
+                let message = BackendMessage::DocumentSync { data };
                 eprintln!("Sending: {:?}", message);
                 socket.send(message).await.unwrap();
             }
         });
     }
 
-    fn begin_stdin_task(tx: Sender<Change>) {
+    fn begin_stdin_task(tx: Sender<ClientMessage>) {
         tokio::spawn(async move {
             let stdin = BufReader::new(io::stdin());
             let mut lines = stdin.lines();
 
             while let Ok(Some(line)) = lines.next_line().await {
-                let change = serde_json::from_str::<Change>(&line).unwrap();
-                eprintln!("Received from stdin: {:?}", change);
-                tx.send(change).await.unwrap();
+                let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
+                eprintln!("Received from stdin: {:?}", message);
+                tx.send(message).await.unwrap();
             }
         });
     }
 
-    fn begin_stdout_task(mut rx: Receiver<Change>) {
+    fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
         tokio::spawn(async move {
-            while let Some(change) = rx.recv().await {
-                let serialized = serde_json::to_string(&change).unwrap();
+            while let Some(message) = rx.recv().await {
+                let serialized = serde_json::to_string(&message).unwrap();
                 eprintln!("Sending to stdout: {:?}", serialized);
                 // TODO should this be using Tokio's stdout?
                 let mut stdout = std::io::stdout();

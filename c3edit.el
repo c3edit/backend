@@ -41,6 +41,9 @@
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
+(defvar c3edit--buffer nil
+  "Current active c3edit buffer.")
+
 (defvar c3edit--synced-changes-p nil
   "Whether current changes being inserted are from backend.
 Dynamically-scoped variable to prevent infinitely-recursing changes.")
@@ -61,7 +64,8 @@ Start as server if SERVER is non-nil."
                            :name "c3edit"
                            :command command
                            :filter #'c3edit--process-filter
-                           :stderr (get-buffer-create "*c3edit log*")))))
+                           :stderr (get-buffer-create "*c3edit log*"))))
+  (setq c3edit--buffer (current-buffer)))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -89,7 +93,7 @@ Returns list of read objects."
   "Update buffer to reflect CHANGE.
 CHANGE should be a variant of the `Change' enum, deserialized into an
 alist."
-  (with-current-buffer "c3edit"
+  (with-current-buffer c3edit--buffer
     (save-excursion
       (let-alist change
         (pcase .type
@@ -118,8 +122,7 @@ Processes message from TEXT."
   "Update c3edit backend after a change to buffer.
 BEG, END, and LEN are as documented in `after-change-functions'."
   (when (and (not c3edit--synced-changes-p)
-             (string= (buffer-name (current-buffer))
-                      "c3edit"))
+             (equal (current-buffer) c3edit--buffer))
     (let (change)
       (if (= beg end)
           (setq change `((type . "delete")

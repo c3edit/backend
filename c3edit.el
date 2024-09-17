@@ -42,7 +42,7 @@ Dynamically-scoped variable to prevent infinitely-recursing changes.")
 Start as server if SERVER is non-nil."
   (interactive (list (y-or-n-p "Start as server?")))
   (let ((address)
-        (command '("~/git/c3edit/target/debug/c3edit")))
+        (command '("~/git/c3edit/target/release/c3edit")))
     (if server
         (setq command (append command (list "server")))
       (setq address (read-string "Address: "))

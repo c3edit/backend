@@ -85,6 +85,22 @@ Returns list of read objects."
         (json-end-of-file)))
     (nreverse data)))
 
+(defun c3edit--handle-change (change)
+  "Update buffer to reflect CHANGE.
+CHANGE should be a variant of the `Change' enum, deserialized into an
+alist."
+  (with-current-buffer "c3edit"
+    (save-excursion
+      (let-alist change
+        (pcase .type
+          ("insert"
+           (goto-char (1+ .index))
+           (insert .text))
+          ("delete"
+           (delete-region
+            (1+ .index)
+            (+ 1 .index .len))))))))
+
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
 Processes message from TEXT."
@@ -93,34 +109,29 @@ Processes message from TEXT."
   ;; to read them all in order.
   (let* ((data (c3edit--json-read-all text))
          (c3edit--synced-changes-p t))
-    (with-current-buffer "c3edit"
-      (save-excursion
-        (dolist (change data)
-          (pcase (caar change)
-            ('insert
-             (goto-char (1+ (map-nested-elt change '(insert index))))
-             (insert (map-nested-elt change '(insert text))))
-            ('delete
-             (delete-region
-              (1+ (map-nested-elt change '(delete index)))
-              (+ (map-nested-elt change '(delete index))
-                 (map-nested-elt change '(delete len))
-                 1)))))))))
+    (dolist (message data)
+      (let-alist message
+        (pcase .type
+          ("change" (c3edit--handle-change .change)))))))
 
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.
 BEG, END, and LEN are as documented in `after-change-functions'."
-  (when-let (((not c3edit--synced-changes-p))
-             ((string= (buffer-name (current-buffer))
-                       "c3edit"))
-             (data ""))
-    (if (= beg end)
-        (setq data `((delete . ((index . ,(1- beg))
-                                (len . ,len)))))
-      (setq data `((insert . ((index . ,(1- beg))
-                              (text . ,(buffer-substring-no-properties beg end)))))))
-    (process-send-string c3edit--process
-                         (format "%s\n" (json-encode data)))))
+  (when (and (not c3edit--synced-changes-p)
+             (string= (buffer-name (current-buffer))
+                      "c3edit"))
+    (let (change)
+      (if (= beg end)
+          (setq change `((type . "delete")
+                         (index . ,(1- beg))
+                         (len . ,len)))
+        (setq change `((type . "insert")
+                       (index . ,(1- beg))
+                       (text . ,(buffer-substring-no-properties beg end)))))
+      (process-send-string c3edit--process
+                           (format "%s\n"
+                                   (json-encode `((type . "change")
+                                                  (change . ,change))))))))
 
 (add-hook 'after-change-functions #'c3edit--after-change-function)
 

@@ -125,25 +125,27 @@ impl Client {
 
         eprintln!("Entering main loop");
         loop {
-            while let Ok(change) = stdin_task_channel_rx.try_recv() {
-                eprintln!("Main task received from stdin: {:?}", change);
-                match change {
-                    Change::Insert { index, text } => {
-                        self.doc.get_text("text").insert(index, &text).unwrap();
-                    }
-                    Change::Delete { index, len } => {
-                        self.doc.get_text("text").delete(index, len).unwrap();
-                    }
-                }
-                outgoing_task_channel_tx
-                    .send(self.doc.export_from(&Default::default()))
-                    .await
-                    .unwrap();
-            }
+            tokio::select! {
+                Some(change) = stdin_task_channel_rx.recv() => {
+                        eprintln!("Main task received from stdin: {:?}", change);
+                        match change {
+                            Change::Insert { index, text } => {
+                                self.doc.get_text("text").insert(index, &text).unwrap();
+                            }
+                            Change::Delete { index, len } => {
+                                self.doc.get_text("text").delete(index, len).unwrap();
+                            }
+                        }
+                        outgoing_task_channel_tx
+                            .send(self.doc.export_from(&Default::default()))
+                            .await
+                            .unwrap();
+                },
 
-            while let Ok(data) = incoming_task_channel_rx.try_recv() {
-                eprintln!("Main task received from socket: {:?}", data);
-                self.doc.import(&data).unwrap();
+                Some(data) = incoming_task_channel_rx.recv() => {
+                        eprintln!("Main task received from socket: {:?}", data);
+                        self.doc.import(&data).unwrap();
+                }
             }
         }
     }

@@ -77,6 +77,13 @@ Start as server if SERVER is non-nil."
   (setq c3edit--process nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function))
 
+(defun c3edit--send-initial-data ()
+  "Send initial buffer contents to backend process."
+  (process-send-string c3edit--process
+                       (format "%s\n"
+                               (json-encode `((type . "create_document")
+                                              (initial_content . ,(buffer-string)))))))
+
 (defun c3edit--json-read-all (string)
   "Read all JSON objects from STRING.
 Returns list of read objects."

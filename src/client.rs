@@ -29,6 +29,7 @@ type ReadSocket = tokio_serde::SymmetricallyFramed<
 #[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
 #[serde(tag = "type")]
 enum ClientMessage {
+    CreateDocument { initial_content: String },
     Change { change: Change },
 }
 
@@ -137,20 +138,31 @@ impl Client {
             tokio::select! {
                 Some(message) = stdin_task_channel_rx.recv() => {
                     eprintln!("Main task received from stdin: {:?}", message);
-                    let ClientMessage::Change { change } = message;
-                    match change {
-                        Change::Insert { index, text } => {
-                            self.doc.get_text("text").insert(index, &text).unwrap();
-                        }
-                        Change::Delete { index, len } => {
-                            self.doc.get_text("text").delete(index, len).unwrap();
+
+                    match message {
+                        ClientMessage::Change{change} =>  {
+                            match change {
+                                Change::Insert { index, text } => {
+                                    self.doc.get_text("text").insert(index, &text).unwrap();
+                                }
+                                Change::Delete { index, len } => {
+                                    self.doc.get_text("text").delete(index, len).unwrap();
+                                }
+                            }
+
+                            outgoing_task_channel_tx
+                            .send(self.doc.export_from(&Default::default()))
+                            .await
+                            .unwrap();
+                        },
+                        ClientMessage::CreateDocument{initial_content} => {
+                            self.doc.get_text("text").update(&initial_content);
+                            outgoing_task_channel_tx
+                            .send(self.doc.export_from(&Default::default()))
+                            .await
+                            .unwrap();
                         }
                     }
-
-                    outgoing_task_channel_tx
-                    .send(self.doc.export_from(&Default::default()))
-                    .await
-                    .unwrap();
                 },
 
                 Some(data) = incoming_task_channel_rx.recv() => {

@@ -8,10 +8,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
     },
-    sync::{
-        mpsc::{Receiver, Sender},
-        Mutex,
-    },
+    sync::mpsc::{Receiver, Sender},
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -41,7 +38,7 @@ struct Message {
 }
 
 pub struct Client {
-    doc: Arc<Mutex<LoroDoc>>,
+    doc: LoroDoc,
     write_socket: WriteSocket,
     read_socket: ReadSocket,
 }
@@ -61,14 +58,10 @@ impl Client {
         );
 
         Client {
-            doc: Arc::new(Mutex::new(LoroDoc::new())),
+            doc: LoroDoc::new(),
             write_socket: write_framed,
             read_socket: (read_framed),
         }
-    }
-
-    pub async fn read(&self) -> String {
-        self.doc.lock().await.get_text("text").to_string()
     }
 
     pub async fn begin_event_loop(self) {
@@ -83,8 +76,8 @@ impl Client {
         Client::begin_stdin_task(stdin_task_channel_tx);
         Client::begin_stdout_task(stdout_task_channel_rx);
 
-        let id = self.doc.lock().await.get_text("text").id();
-        self.doc.lock().await.subscribe(
+        let id = self.doc.get_text("text").id();
+        self.doc.subscribe(
             &id,
             Arc::new(move |change| {
                 if !change.triggered_by.is_import() {
@@ -136,31 +129,21 @@ impl Client {
                 eprintln!("Main task received from stdin: {:?}", change);
                 match change {
                     Change::Insert { index, text } => {
-                        self.doc
-                            .lock()
-                            .await
-                            .get_text("text")
-                            .insert(index, &text)
-                            .unwrap();
+                        self.doc.get_text("text").insert(index, &text).unwrap();
                     }
                     Change::Delete { index, len } => {
-                        self.doc
-                            .lock()
-                            .await
-                            .get_text("text")
-                            .delete(index, len)
-                            .unwrap();
+                        self.doc.get_text("text").delete(index, len).unwrap();
                     }
                 }
                 outgoing_task_channel_tx
-                    .send(self.doc.lock().await.export_from(&Default::default()))
+                    .send(self.doc.export_from(&Default::default()))
                     .await
                     .unwrap();
             }
 
             while let Ok(data) = incoming_task_channel_rx.try_recv() {
                 eprintln!("Main task received from socket: {:?}", data);
-                self.doc.lock().await.import(&data).unwrap();
+                self.doc.import(&data).unwrap();
             }
         }
     }

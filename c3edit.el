@@ -65,7 +65,8 @@ Start as server if SERVER is non-nil."
                            :command command
                            :filter #'c3edit--process-filter
                            :stderr (get-buffer-create "*c3edit log*"))))
-  (setq c3edit--buffer (current-buffer)))
+  (setq c3edit--buffer (current-buffer))
+  (add-hook 'after-change-functions #'c3edit--after-change-function))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -74,7 +75,7 @@ Start as server if SERVER is non-nil."
     (user-error "Backend for c3edit is not running"))
   (kill-process c3edit--process)
   (setq c3edit--process nil)
-  (message "Killed c3edit backend"))
+  (remove-hook 'after-change-functions #'c3edit--after-change-function))
 
 (defun c3edit--json-read-all (string)
   "Read all JSON objects from STRING.
@@ -135,8 +136,6 @@ BEG, END, and LEN are as documented in `after-change-functions'."
                            (format "%s\n"
                                    (json-encode `((type . "change")
                                                   (change . ,change))))))))
-
-(add-hook 'after-change-functions #'c3edit--after-change-function)
 
 (provide 'c3edit)
 

@@ -77,6 +77,12 @@ Start as server if SERVER is non-nil."
   (setq c3edit--process nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function))
 
+(defun c3edit-add-peer (address)
+  "Add a peer at ADDRESS."
+  (interactive "sAddress: ")
+  (c3edit--send-message `((type . "add_peer")
+                          (address . ,address))))
+
 (defsubst c3edit--send-message (message)
   "Serialize MESSAGE into JSON and send it to the c3edit backend."
   (process-send-string

@@ -44,6 +44,8 @@ Dynamically-scoped variable to prevent infinitely-recursing changes.")
   "Start the c3edit backend.
 Start as server if SERVER is non-nil."
   (interactive (list (y-or-n-p "Start as server?")))
+  (when c3edit--process
+    (user-error "Backend for c3edit is already running"))
   (let ((address)
         (command (list c3edit-backend-path)))
     (if server
@@ -59,7 +61,11 @@ Start as server if SERVER is non-nil."
 (defun c3edit-stop ()
   "Kill c3edit backend."
   (interactive)
-  (kill-process c3edit--process))
+  (unless c3edit--process
+    (user-error "Backend for c3edit is not running"))
+  (kill-process c3edit--process)
+  (setq c3edit--process nil)
+  (message "Killed c3edit backend"))
 
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.

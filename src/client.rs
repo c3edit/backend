@@ -12,7 +12,7 @@ use tokio::{
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use tracing::debug;
+use tracing::{debug, error};
 
 // I hate Rust sometimes.
 type WriteSocket = tokio_serde::SymmetricallyFramed<
@@ -31,6 +31,7 @@ type ReadSocket = tokio_serde::SymmetricallyFramed<
 #[serde(tag = "type")]
 enum ClientMessage {
     AddPeer { address: String },
+    PeerAdded { address: String },
     CreateDocument { initial_content: String },
     Change { change: Change },
 }
@@ -80,6 +81,7 @@ impl Client {
         debug!("Tasks started");
 
         let id = self.doc.get_text("text").id();
+        let channel = stdout_task_channel_tx.clone();
         self.doc.subscribe(
             &id,
             Arc::new(move |change| {
@@ -117,7 +119,7 @@ impl Client {
                 // be async, and we can't use `blocking_send` because this runs
                 // inside a Tokio thread, which should never block (and will
                 // panic if it does).
-                let stdout_task_channel_tx = stdout_task_channel_tx.clone();
+                let stdout_task_channel_tx = channel.clone();
                 tokio::spawn(async move {
                     for change in changes {
                         let message = ClientMessage::Change { change };
@@ -131,7 +133,7 @@ impl Client {
         debug!("Entering main event loop");
         loop {
             tokio::select! {
-                Ok((socket, _)) = self.listener.accept() => {
+                Ok((socket, addr)) = self.listener.accept() => {
                     let (read, write) = socket.into_split();
 
                     let read_framed = tokio_serde::SymmetricallyFramed::new(
@@ -145,11 +147,18 @@ impl Client {
 
                     incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
                     outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
+
+                    debug!("Accepted connection from peer at {}", addr);
+                    stdout_task_channel_tx.send(ClientMessage::PeerAdded{address: addr.to_string()}).await.unwrap();
                 },
                 Some(message) = stdin_task_channel_rx.recv() => {
                     debug!("Main task received from stdin: {:?}", message);
 
                     match message {
+                        // Messages that should only ever be sent to the client.
+                        ClientMessage::PeerAdded{..} => {
+                            error!("Received message which should only be sent to the client: {:?}", message);
+                        },
                         ClientMessage::AddPeer{address} => {
                             debug!("Connecting to peer at {}", address);
                             let socket = TcpStream::connect(&address).await.unwrap();
@@ -169,6 +178,7 @@ impl Client {
                             outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
 
                             debug!("Connected to peer at {}", address);
+                            stdout_task_channel_tx.send(ClientMessage::PeerAdded{address}).await.unwrap();
                         },
                         ClientMessage::Change{change} =>  {
                             match change {

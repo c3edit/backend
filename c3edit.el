@@ -36,7 +36,7 @@
 
 (defcustom c3edit-backend-path (executable-find "c3edit")
   "Path to c3edit backend binary."
-  :type 'path)
+  :type '(file :must-match t))
 
 (defvar c3edit--process nil
   "Process for c3edit backend.")

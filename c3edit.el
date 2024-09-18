@@ -38,6 +38,10 @@
   "Path to c3edit backend binary."
   :type '(file :must-match t))
 
+(defcustom c3edit-port nil
+  "Port to listen for incoming connections on."
+  :type 'natnum)
+
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
@@ -55,6 +59,8 @@ Start as server if SERVER is non-nil."
   (when c3edit--process
     (user-error "Backend for c3edit is already running"))
   (let ((command (list c3edit-backend-path)))
+    (when c3edit-port
+      (setq command (nconc command `("--port" ,c3edit-port))))
     (setq c3edit--process (make-process
                            :name "c3edit"
                            :command command

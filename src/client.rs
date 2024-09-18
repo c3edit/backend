@@ -199,27 +199,17 @@ impl Client {
 
     fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>) {
         tokio::spawn(async move {
-            let mut sockets = Vec::new();
+            while let Some(mut socket) = socket_rx.recv().await {
+                let tx = tx.clone();
 
-            loop {
-                if let Ok(socket) = socket_rx.try_recv() {
-                    sockets.push(socket);
-                }
-                for socket in sockets.iter_mut() {
-                    // HACK This is ugly, but I don't know how to check if
-                    // there's data in the socket without awaiting it. We cannot
-                    // simply poll all sockets concurrently, because we need to
-                    // be able to borrow `sockets` mutably above.
-                    if let Some(message) = timeout(Duration::from_millis(10), socket.try_next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                    {
+                // TODO store join handles so we can cancel tasks when disconnecting.
+                tokio::spawn(async move {
+                    while let Some(message) = socket.try_next().await.unwrap() {
                         eprintln!("Received: {:?}", message);
                         let BackendMessage::DocumentSync { data } = message;
                         tx.send(data).await.unwrap();
                     }
-                }
+                });
             }
         });
     }

@@ -13,6 +13,7 @@ use tokio::{
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use tracing::debug;
 
 // I hate Rust sometimes.
 type WriteSocket = tokio_serde::SymmetricallyFramed<
@@ -71,11 +72,13 @@ impl Client {
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (outgoing_task_socket_channel_tx, outgoing_task_socket_channel_rx) =
             tokio::sync::mpsc::channel(1);
+        debug!("Channels created");
 
         Client::begin_incoming_task(incoming_task_channel_tx, incoming_task_socket_channel_rx);
         Client::begin_outgoing_task(outgoing_task_channel_rx, outgoing_task_socket_channel_rx);
         Client::begin_stdin_task(stdin_task_channel_tx);
         Client::begin_stdout_task(stdout_task_channel_rx);
+        debug!("Tasks started");
 
         let id = self.doc.get_text("text").id();
         self.doc.subscribe(
@@ -124,8 +127,9 @@ impl Client {
                 });
             }),
         );
+        debug!("Subscribed to document");
 
-        eprintln!("Entering main loop");
+        debug!("Entering main event loop");
         loop {
             tokio::select! {
                 Ok((socket, _)) = self.listener.accept() => {
@@ -144,7 +148,7 @@ impl Client {
                     outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
                 },
                 Some(message) = stdin_task_channel_rx.recv() => {
-                    eprintln!("Main task received from stdin: {:?}", message);
+                    debug!("Main task received from stdin: {:?}", message);
 
                     match message {
                         ClientMessage::AddPeer{address} => {
@@ -190,7 +194,7 @@ impl Client {
                 },
 
                 Some(data) = incoming_task_channel_rx.recv() => {
-                    eprintln!("Main task received from socket: {:?}", data);
+                    debug!("Main task importing data");
                     self.doc.import(&data).unwrap();
                 }
             }
@@ -205,7 +209,7 @@ impl Client {
                 // TODO store join handles so we can cancel tasks when disconnecting.
                 tokio::spawn(async move {
                     while let Some(message) = socket.try_next().await.unwrap() {
-                        eprintln!("Received: {:?}", message);
+                        debug!("Received from network: {:?}", message);
                         let BackendMessage::DocumentSync { data } = message;
                         tx.send(data).await.unwrap();
                     }
@@ -225,7 +229,7 @@ impl Client {
                     },
                     Some(data) = rx.recv() => {
                         let message = BackendMessage::DocumentSync { data };
-                        eprintln!("Sending: {:?}", message);
+                        debug!("Sending to network: {:?}", message);
 
                         for socket in sockets.iter_mut() {
                             socket.send(message.clone()).await.unwrap();
@@ -243,7 +247,7 @@ impl Client {
 
             while let Ok(Some(line)) = lines.next_line().await {
                 let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
-                eprintln!("Received from stdin: {:?}", message);
+                debug!("Received message from stdin: {:?}", message);
                 tx.send(message).await.unwrap();
             }
         });
@@ -253,7 +257,7 @@ impl Client {
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
                 let serialized = serde_json::to_string(&message).unwrap();
-                eprintln!("Sending to stdout: {:?}", serialized);
+                debug!("Sending message to stdout: {:?}", serialized);
                 // TODO should this be using Tokio's stdout?
                 let mut stdout = std::io::stdout();
                 stdout.write_all(serialized.as_bytes()).unwrap();

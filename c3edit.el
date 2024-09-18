@@ -48,18 +48,13 @@
   "Whether current changes being inserted are from backend.
 Dynamically-scoped variable to prevent infinitely-recursing changes.")
 
-(defun c3edit-start (&optional server)
+(defun c3edit-start ()
   "Start the c3edit backend.
 Start as server if SERVER is non-nil."
-  (interactive (list (y-or-n-p "Start as server?")))
+  (interactive)
   (when c3edit--process
     (user-error "Backend for c3edit is already running"))
-  (let ((address)
-        (command (list c3edit-backend-path)))
-    (if server
-        (setq command (append command (list "server")))
-      (setq address (read-string "Address: "))
-      (setq command (append command (list address))))
+  (let ((command (list c3edit-backend-path)))
     (setq c3edit--process (make-process
                            :name "c3edit"
                            :command command

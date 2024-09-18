@@ -2,6 +2,7 @@ mod client;
 
 use clap::Parser;
 use client::Client;
+use color_eyre::Result;
 use tokio::net::TcpListener;
 use tracing::debug;
 
@@ -19,10 +20,11 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    color_eyre::install()?;
 
     let args = Args::parse();
 
@@ -36,4 +38,5 @@ async fn main() {
     client.begin_event_loop().await;
 
     debug!("Client exited, returning");
+    Ok(())
 }

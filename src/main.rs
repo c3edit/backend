@@ -1,10 +1,12 @@
 mod client;
 
+use std::io;
+
 use clap::Parser;
 use client::Client;
 use color_eyre::Result;
 use tokio::net::TcpListener;
-use tracing::debug;
+use tracing::{debug, level_filters::LevelFilter};
 
 /// Real-time cross-editor collaborative editing backend.
 #[derive(Debug, Parser)]
@@ -17,16 +19,26 @@ struct Args {
     /// Port to listen to incoming connections on.
     #[arg(short, long, default_value = "6969")]
     port: u16,
+
+    /// Print debug information to stderr.
+    #[arg(long, default_value = "false")]
+    debug: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    color_eyre::install()?;
-
     let args = Args::parse();
+
+    let mut filter = tracing_subscriber::filter::EnvFilter::from_default_env();
+    if args.debug {
+        filter = filter.add_directive(LevelFilter::DEBUG.into());
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .init();
+
+    color_eyre::install()?;
 
     let addr = format!("{}:{}", args.address, args.port);
     let listener = TcpListener::bind(&addr).await.unwrap();

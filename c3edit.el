@@ -128,7 +128,8 @@ Processes message from TEXT."
     (dolist (message data)
       (let-alist message
         (pcase .type
-          ("change" (c3edit--handle-change .change)))))))
+          ("change" (c3edit--handle-change .change))
+          ("peer_added" (message "Successfully added peer at %s" .address)))))))
 
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.

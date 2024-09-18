@@ -1,7 +1,7 @@
 use futures::{SinkExt, TryStreamExt};
 use loro::{LoroDoc, TextDelta};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, sync::Arc, time::Duration};
+use std::{io::Write, sync::Arc};
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     net::{
@@ -9,7 +9,6 @@ use tokio::{
         TcpListener, TcpStream,
     },
     sync::mpsc::{Receiver, Sender},
-    time::timeout,
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};

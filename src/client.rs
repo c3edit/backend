@@ -151,7 +151,8 @@ impl Client {
 
                     match message {
                         ClientMessage::AddPeer{address} => {
-                            let socket = TcpStream::connect(address).await.unwrap();
+                            debug!("Connecting to peer at {}", address);
+                            let socket = TcpStream::connect(&address).await.unwrap();
                             socket.set_nodelay(true).unwrap();
 
                             let (read, write) = socket.into_split();
@@ -166,6 +167,8 @@ impl Client {
 
                             incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
                             outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
+
+                            debug!("Connected to peer at {}", address);
                         },
                         ClientMessage::Change{change} =>  {
                             match change {

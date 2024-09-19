@@ -80,31 +80,20 @@ impl Client {
         begin_stdout_task(stdout_task_channel_rx);
         debug!("Tasks started");
 
-        let channel = stdout_task_channel_tx.clone();
-        add_doc_change_subsription(&mut self.doc, channel);
+        add_doc_change_subsription(&mut self.doc, stdout_task_channel_tx.clone());
         debug!("Subscribed to document");
 
         debug!("Entering main event loop");
         loop {
             tokio::select! {
-                Ok((socket, addr)) = self.listener.accept() => {
-                    let (read, write) = socket.into_split();
-
-                    let read_framed = tokio_serde::SymmetricallyFramed::new(
-                        FramedRead::new(read, LengthDelimitedCodec::new()),
-                        SymmetricalJson::<BackendMessage>::default(),
-                    );
-                    let write_framed = tokio_serde::SymmetricallyFramed::new(
-                        FramedWrite::new(write, LengthDelimitedCodec::new()),
-                        SymmetricalJson::<BackendMessage>::default(),
-                    );
-
-                    incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
-                    outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
-
-                    debug!("Accepted connection from peer at {}", addr);
-                    stdout_task_channel_tx.send(ClientMessage::PeerAdded{address: addr.to_string()}).await.unwrap();
-                },
+                Ok(socket) = self.listener.accept() => {
+                    accept_new_connection(
+                        socket,
+                        stdout_task_channel_tx.clone(),
+                        incoming_task_socket_channel_tx.clone(),
+                        outgoing_task_socket_channel_tx.clone()
+                    ).await;
+                }
                 Some(message) = stdin_task_channel_rx.recv() => {
                     debug!("Main task received from stdin: {:?}", message);
 
@@ -277,4 +266,39 @@ fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>)
             }
         });
     }));
+}
+
+async fn accept_new_connection(
+    (socket, addr): (TcpStream, std::net::SocketAddr),
+    stdout_task_channel_tx: Sender<ClientMessage>,
+    incoming_task_socket_channel_tx: Sender<ReadSocket>,
+    outgoing_task_socket_channel_tx: Sender<WriteSocket>,
+) {
+    let (read, write) = socket.into_split();
+
+    let read_framed = tokio_serde::SymmetricallyFramed::new(
+        FramedRead::new(read, LengthDelimitedCodec::new()),
+        SymmetricalJson::<BackendMessage>::default(),
+    );
+    let write_framed = tokio_serde::SymmetricallyFramed::new(
+        FramedWrite::new(write, LengthDelimitedCodec::new()),
+        SymmetricalJson::<BackendMessage>::default(),
+    );
+
+    incoming_task_socket_channel_tx
+        .send(read_framed)
+        .await
+        .unwrap();
+    outgoing_task_socket_channel_tx
+        .send(write_framed)
+        .await
+        .unwrap();
+
+    debug!("Accepted connection from peer at {}", addr);
+    stdout_task_channel_tx
+        .send(ClientMessage::PeerAdded {
+            address: addr.to_string(),
+        })
+        .await
+        .unwrap();
 }

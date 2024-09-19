@@ -74,10 +74,10 @@ impl Client {
             tokio::sync::mpsc::channel(1);
         debug!("Channels created");
 
-        Client::begin_incoming_task(incoming_task_channel_tx, incoming_task_socket_channel_rx);
-        Client::begin_outgoing_task(outgoing_task_channel_rx, outgoing_task_socket_channel_rx);
-        Client::begin_stdin_task(stdin_task_channel_tx);
-        Client::begin_stdout_task(stdout_task_channel_rx);
+        begin_incoming_task(incoming_task_channel_tx, incoming_task_socket_channel_rx);
+        begin_outgoing_task(outgoing_task_channel_rx, outgoing_task_socket_channel_rx);
+        begin_stdin_task(stdin_task_channel_tx);
+        begin_stdout_task(stdout_task_channel_rx);
         debug!("Tasks started");
 
         let id = self.doc.get_text("text").id();
@@ -212,69 +212,69 @@ impl Client {
             }
         }
     }
+}
 
-    fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>) {
-        tokio::spawn(async move {
-            while let Some(mut socket) = socket_rx.recv().await {
-                let tx = tx.clone();
+fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>) {
+    tokio::spawn(async move {
+        while let Some(mut socket) = socket_rx.recv().await {
+            let tx = tx.clone();
 
-                // TODO store join handles so we can cancel tasks when disconnecting.
-                tokio::spawn(async move {
-                    while let Some(message) = socket.try_next().await.unwrap() {
-                        debug!("Received from network: {:?}", message);
-                        let BackendMessage::DocumentSync { data } = message;
-                        tx.send(data).await.unwrap();
-                    }
-                });
-            }
-        });
-    }
+            // TODO store join handles so we can cancel tasks when disconnecting.
+            tokio::spawn(async move {
+                while let Some(message) = socket.try_next().await.unwrap() {
+                    debug!("Received from network: {:?}", message);
+                    let BackendMessage::DocumentSync { data } = message;
+                    tx.send(data).await.unwrap();
+                }
+            });
+        }
+    });
+}
 
-    fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket_rx: Receiver<WriteSocket>) {
-        tokio::spawn(async move {
-            let mut sockets = Vec::new();
+fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket_rx: Receiver<WriteSocket>) {
+    tokio::spawn(async move {
+        let mut sockets = Vec::new();
 
-            loop {
-                tokio::select! {
-                    Some(socket) = socket_rx.recv() => {
-                        sockets.push(socket);
-                    },
-                    Some(data) = rx.recv() => {
-                        let message = BackendMessage::DocumentSync { data };
-                        debug!("Sending to network: {:?}", message);
+        loop {
+            tokio::select! {
+                Some(socket) = socket_rx.recv() => {
+                    sockets.push(socket);
+                },
+                Some(data) = rx.recv() => {
+                    let message = BackendMessage::DocumentSync { data };
+                    debug!("Sending to network: {:?}", message);
 
-                        for socket in sockets.iter_mut() {
-                            socket.send(message.clone()).await.unwrap();
-                        }
+                    for socket in sockets.iter_mut() {
+                        socket.send(message.clone()).await.unwrap();
                     }
                 }
             }
-        });
-    }
+        }
+    });
+}
 
-    fn begin_stdin_task(tx: Sender<ClientMessage>) {
-        tokio::spawn(async move {
-            let stdin = BufReader::new(io::stdin());
-            let mut lines = stdin.lines();
+fn begin_stdin_task(tx: Sender<ClientMessage>) {
+    tokio::spawn(async move {
+        let stdin = BufReader::new(io::stdin());
+        let mut lines = stdin.lines();
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
-                debug!("Received message from stdin: {:?}", message);
-                tx.send(message).await.unwrap();
-            }
-        });
-    }
+        while let Ok(Some(line)) = lines.next_line().await {
+            let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
+            debug!("Received message from stdin: {:?}", message);
+            tx.send(message).await.unwrap();
+        }
+    });
+}
 
-    fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                let serialized = serde_json::to_string(&message).unwrap();
-                debug!("Sending message to stdout: {:?}", serialized);
-                // TODO should this be using Tokio's stdout?
-                let mut stdout = std::io::stdout();
-                stdout.write_all(serialized.as_bytes()).unwrap();
-                stdout.write_all(b"\n").unwrap();
-            }
-        });
-    }
+fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
+    tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            let serialized = serde_json::to_string(&message).unwrap();
+            debug!("Sending message to stdout: {:?}", serialized);
+            // TODO should this be using Tokio's stdout?
+            let mut stdout = std::io::stdout();
+            stdout.write_all(serialized.as_bytes()).unwrap();
+            stdout.write_all(b"\n").unwrap();
+        }
+    });
 }

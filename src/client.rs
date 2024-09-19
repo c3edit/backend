@@ -62,7 +62,7 @@ impl Client {
         }
     }
 
-    pub async fn begin_event_loop(self) {
+    pub async fn begin_event_loop(mut self) {
         let (stdin_task_channel_tx, mut stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (incoming_task_channel_tx, mut incoming_task_channel_rx) =
@@ -80,54 +80,8 @@ impl Client {
         begin_stdout_task(stdout_task_channel_rx);
         debug!("Tasks started");
 
-        let id = self.doc.get_text("text").id();
         let channel = stdout_task_channel_tx.clone();
-        self.doc.subscribe(
-            &id,
-            Arc::new(move |change| {
-                if !change.triggered_by.is_import() {
-                    return;
-                }
-
-                let mut changes = Vec::new();
-                for event in change.events {
-                    let diffs = event.diff.as_text().unwrap();
-                    let mut index = 0;
-
-                    for diff in diffs {
-                        match diff {
-                            TextDelta::Retain { retain, .. } => {
-                                index += retain;
-                            }
-                            TextDelta::Insert { insert, .. } => {
-                                changes.push(Change::Insert {
-                                    index,
-                                    text: insert.to_string(),
-                                });
-                            }
-                            TextDelta::Delete { delete, .. } => {
-                                changes.push(Change::Delete {
-                                    index,
-                                    len: *delete,
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // We have to spawn a new task here because this callback can't
-                // be async, and we can't use `blocking_send` because this runs
-                // inside a Tokio thread, which should never block (and will
-                // panic if it does).
-                let stdout_task_channel_tx = channel.clone();
-                tokio::spawn(async move {
-                    for change in changes {
-                        let message = ClientMessage::Change { change };
-                        stdout_task_channel_tx.send(message).await.unwrap();
-                    }
-                });
-            }),
-        );
+        add_doc_change_subsription(&mut self.doc, channel);
         debug!("Subscribed to document");
 
         debug!("Entering main event loop");
@@ -277,4 +231,50 @@ fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
             stdout.write_all(b"\n").unwrap();
         }
     });
+}
+
+fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>) {
+    doc.subscribe_root(Arc::new(move |change| {
+        if !change.triggered_by.is_import() {
+            return;
+        }
+
+        let mut changes = Vec::new();
+        for event in change.events {
+            let diffs = event.diff.as_text().unwrap();
+            let mut index = 0;
+
+            for diff in diffs {
+                match diff {
+                    TextDelta::Retain { retain, .. } => {
+                        index += retain;
+                    }
+                    TextDelta::Insert { insert, .. } => {
+                        changes.push(Change::Insert {
+                            index,
+                            text: insert.to_string(),
+                        });
+                    }
+                    TextDelta::Delete { delete, .. } => {
+                        changes.push(Change::Delete {
+                            index,
+                            len: *delete,
+                        });
+                    }
+                }
+            }
+        }
+
+        // We have to spawn a new task here because this callback can't
+        // be async, and we can't use `blocking_send` because this runs
+        // inside a Tokio thread, which should never block (and will
+        // panic if it does).
+        let stdout_task_channel_tx = channel.clone();
+        tokio::spawn(async move {
+            for change in changes {
+                let message = ClientMessage::Change { change };
+                stdout_task_channel_tx.send(message).await.unwrap();
+            }
+        });
+    }));
 }

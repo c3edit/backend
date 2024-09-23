@@ -135,7 +135,9 @@ Processes message from TEXT."
       (let-alist message
         (pcase .type
           ("change" (c3edit--handle-change .change))
-          ("peer_added_response" (message "Successfully added peer at %s" .address)))))))
+          ("peer_added_response" (message "Successfully added peer at %s" .address))
+          (_ (display-warning
+              'c3edit (format "Unknown message type: %s" .type) :warning)))))))
 
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.

@@ -102,15 +102,11 @@ impl Client {
         loop {
             tokio::select! {
                 Ok(socket) = self.listener.accept() => {
-                    accept_new_connection(
-                        socket,
-                        self.channels.clone(),
-                    ).await;
+                    self.accept_new_connection(socket).await;
                 }
 
                 Some(message) = self.stdin_rx.recv() => {
-                    let channels = self.channels.clone();
-                    handle_stdin_message(&mut self, channels, message).await;
+                    self.handle_stdin_message(message).await;
                 }
 
                 Some(data) = self.network_rx.recv() => {
@@ -154,6 +150,222 @@ impl Client {
             stdin_rx: stdin_task_channel_rx,
             network_rx: incoming_task_from_channel_rx,
             active_documents: HashMap::new(),
+        }
+    }
+
+    fn add_doc_change_subscription(&mut self, id: &str) -> SubID {
+        let c_id = self.doc.get_text(id).id();
+        let id = id.to_owned();
+        let channel = self.channels.stdout_tx.clone();
+        self.doc.subscribe(
+            &c_id,
+            Arc::new(move |change| {
+                if !change.triggered_by.is_import() {
+                    return;
+                }
+
+                let mut changes = Vec::new();
+                for event in change.events {
+                    let diffs = event.diff.as_text().unwrap();
+                    let mut index = 0;
+
+                    for diff in diffs {
+                        match diff {
+                            TextDelta::Retain { retain, .. } => {
+                                index += retain;
+                            }
+                            TextDelta::Insert { insert, .. } => {
+                                changes.push(Change::Insert {
+                                    index,
+                                    text: insert.to_string(),
+                                });
+                            }
+                            TextDelta::Delete { delete, .. } => {
+                                changes.push(Change::Delete {
+                                    index,
+                                    len: *delete,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // We have to spawn a new task here because this callback can't
+                // be async, and we can't use `blocking_send` because this runs
+                // inside a Tokio thread, which should never block (and will
+                // panic if it does).
+                let stdout_task_channel_tx = channel.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    for change in changes {
+                        let message = ClientMessage::Change {
+                            document_id: id.clone(),
+                            change,
+                        };
+                        stdout_task_channel_tx.send(message).await.unwrap();
+                    }
+                });
+            }),
+        )
+    }
+
+    async fn accept_new_connection(&mut self, (socket, addr): (TcpStream, std::net::SocketAddr)) {
+        let (read, write) = socket.into_split();
+
+        let read_framed = tokio_serde::SymmetricallyFramed::new(
+            FramedRead::new(read, LengthDelimitedCodec::new()),
+            SymmetricalJson::<BackendMessage>::default(),
+        );
+        let write_framed = tokio_serde::SymmetricallyFramed::new(
+            FramedWrite::new(write, LengthDelimitedCodec::new()),
+            SymmetricalJson::<BackendMessage>::default(),
+        );
+
+        self.channels
+            .incoming_to_tx
+            .send(read_framed)
+            .await
+            .unwrap();
+        self.channels
+            .outgoing_tx
+            .send(OutgoingMessage::NewSocket(write_framed))
+            .await
+            .unwrap();
+
+        info!("Accepted connection from peer at {}", addr);
+        self.channels
+            .stdout_tx
+            .send(ClientMessage::AddPeerResponse {
+                address: addr.to_string(),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn handle_stdin_message(&mut self, message: ClientMessage) {
+        info!("Main task received from stdin: {:?}", message);
+
+        match message {
+            // Messages that should only ever be sent to the self.
+            ClientMessage::AddPeerResponse { .. }
+            | ClientMessage::CreateDocumentResponse { .. }
+            | ClientMessage::JoinDocumentResponse { .. } => {
+                error!(
+                    "Received message which should only be sent to the self: {:?}",
+                    message
+                );
+            }
+            ClientMessage::AddPeer { address } => {
+                info!("Connecting to peer at {}", address);
+                let socket = TcpStream::connect(&address).await.unwrap();
+                socket.set_nodelay(true).unwrap();
+
+                let (read, write) = socket.into_split();
+                let read_framed = tokio_serde::SymmetricallyFramed::new(
+                    FramedRead::new(read, LengthDelimitedCodec::new()),
+                    SymmetricalJson::<BackendMessage>::default(),
+                );
+                let write_framed = tokio_serde::SymmetricallyFramed::new(
+                    FramedWrite::new(write, LengthDelimitedCodec::new()),
+                    SymmetricalJson::<BackendMessage>::default(),
+                );
+
+                self.channels
+                    .incoming_to_tx
+                    .send(read_framed)
+                    .await
+                    .unwrap();
+                self.channels
+                    .outgoing_tx
+                    .send(OutgoingMessage::NewSocket(write_framed))
+                    .await
+                    .unwrap();
+
+                info!("Connected to peer at {}", address);
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::AddPeerResponse { address })
+                    .await
+                    .unwrap();
+            }
+            ClientMessage::Change {
+                document_id,
+                change,
+            } => {
+                match change {
+                    Change::Insert { index, text } => {
+                        self.doc.get_text(document_id).insert(index, &text).unwrap();
+                    }
+                    Change::Delete { index, len } => {
+                        self.doc.get_text(document_id).delete(index, len).unwrap();
+                    }
+                }
+
+                self.channels
+                    .outgoing_tx
+                    .send(OutgoingMessage::DocumentData(
+                        self.doc.export_from(&Default::default()),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            ClientMessage::CreateDocument {
+                name,
+                initial_content,
+            } => {
+                let id = generate_unique_id(&name, &mut self.doc);
+
+                self.doc.get_text(id.as_str()).update(&initial_content);
+
+                let subscription = self.add_doc_change_subscription(&id);
+                self.active_documents.insert(id.clone(), subscription);
+
+                info!("Created new document with id {}", id);
+
+                self.channels
+                    .outgoing_tx
+                    .send(OutgoingMessage::DocumentData(
+                        self.doc.export_from(&Default::default()),
+                    ))
+                    .await
+                    .unwrap();
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::CreateDocumentResponse { id })
+                    .await
+                    .unwrap();
+            }
+            ClientMessage::JoinDocument { id } => {
+                if self.active_documents.contains_key(&id) {
+                    error!(
+                        "Client attempted to join document that is already active: {}",
+                        id
+                    );
+                    // TODO Broadcast error to frontend.
+
+                    return;
+                }
+                if self.doc.get_text(id.as_str()).is_empty() {
+                    error!("Client attempted to join document with no content: {}", id);
+                    // TODO Broadcast error to frontend.
+
+                    return;
+                }
+
+                let subscription = self.add_doc_change_subscription(&id);
+                self.active_documents.insert(id.clone(), subscription);
+
+                info!("Joined document with id {}", id);
+
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::JoinDocumentResponse {
+                        id: id.clone(),
+                        current_content: self.doc.get_text(id.as_str()).to_string(),
+                    })
+                    .await
+                    .unwrap();
+            }
         }
     }
 }
@@ -223,226 +435,6 @@ fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
             stdout.write_all(b"\n").unwrap();
         }
     });
-}
-
-fn add_doc_change_subscription(
-    doc: &mut LoroDoc,
-    id: &str,
-    channel: Sender<ClientMessage>,
-) -> SubID {
-    let c_id = doc.get_text(id).id();
-    let id = id.to_owned();
-    doc.subscribe(
-        &c_id,
-        Arc::new(move |change| {
-            if !change.triggered_by.is_import() {
-                return;
-            }
-
-            let mut changes = Vec::new();
-            for event in change.events {
-                let diffs = event.diff.as_text().unwrap();
-                let mut index = 0;
-
-                for diff in diffs {
-                    match diff {
-                        TextDelta::Retain { retain, .. } => {
-                            index += retain;
-                        }
-                        TextDelta::Insert { insert, .. } => {
-                            changes.push(Change::Insert {
-                                index,
-                                text: insert.to_string(),
-                            });
-                        }
-                        TextDelta::Delete { delete, .. } => {
-                            changes.push(Change::Delete {
-                                index,
-                                len: *delete,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // We have to spawn a new task here because this callback can't
-            // be async, and we can't use `blocking_send` because this runs
-            // inside a Tokio thread, which should never block (and will
-            // panic if it does).
-            let stdout_task_channel_tx = channel.clone();
-            let id = id.clone();
-            tokio::spawn(async move {
-                for change in changes {
-                    let message = ClientMessage::Change {
-                        document_id: id.clone(),
-                        change,
-                    };
-                    stdout_task_channel_tx.send(message).await.unwrap();
-                }
-            });
-        }),
-    )
-}
-
-async fn accept_new_connection(
-    (socket, addr): (TcpStream, std::net::SocketAddr),
-    channels: Channels,
-) {
-    let (read, write) = socket.into_split();
-
-    let read_framed = tokio_serde::SymmetricallyFramed::new(
-        FramedRead::new(read, LengthDelimitedCodec::new()),
-        SymmetricalJson::<BackendMessage>::default(),
-    );
-    let write_framed = tokio_serde::SymmetricallyFramed::new(
-        FramedWrite::new(write, LengthDelimitedCodec::new()),
-        SymmetricalJson::<BackendMessage>::default(),
-    );
-
-    channels.incoming_to_tx.send(read_framed).await.unwrap();
-    channels
-        .outgoing_tx
-        .send(OutgoingMessage::NewSocket(write_framed))
-        .await
-        .unwrap();
-
-    info!("Accepted connection from peer at {}", addr);
-    channels
-        .stdout_tx
-        .send(ClientMessage::AddPeerResponse {
-            address: addr.to_string(),
-        })
-        .await
-        .unwrap();
-}
-
-async fn handle_stdin_message(client: &mut Client, channels: Channels, message: ClientMessage) {
-    info!("Main task received from stdin: {:?}", message);
-
-    match message {
-        // Messages that should only ever be sent to the client.
-        ClientMessage::AddPeerResponse { .. }
-        | ClientMessage::CreateDocumentResponse { .. }
-        | ClientMessage::JoinDocumentResponse { .. } => {
-            error!(
-                "Received message which should only be sent to the client: {:?}",
-                message
-            );
-        }
-        ClientMessage::AddPeer { address } => {
-            info!("Connecting to peer at {}", address);
-            let socket = TcpStream::connect(&address).await.unwrap();
-            socket.set_nodelay(true).unwrap();
-
-            let (read, write) = socket.into_split();
-            let read_framed = tokio_serde::SymmetricallyFramed::new(
-                FramedRead::new(read, LengthDelimitedCodec::new()),
-                SymmetricalJson::<BackendMessage>::default(),
-            );
-            let write_framed = tokio_serde::SymmetricallyFramed::new(
-                FramedWrite::new(write, LengthDelimitedCodec::new()),
-                SymmetricalJson::<BackendMessage>::default(),
-            );
-
-            channels.incoming_to_tx.send(read_framed).await.unwrap();
-            channels
-                .outgoing_tx
-                .send(OutgoingMessage::NewSocket(write_framed))
-                .await
-                .unwrap();
-
-            info!("Connected to peer at {}", address);
-            channels
-                .stdout_tx
-                .send(ClientMessage::AddPeerResponse { address })
-                .await
-                .unwrap();
-        }
-        ClientMessage::Change {
-            document_id,
-            change,
-        } => {
-            match change {
-                Change::Insert { index, text } => {
-                    client
-                        .doc
-                        .get_text(document_id)
-                        .insert(index, &text)
-                        .unwrap();
-                }
-                Change::Delete { index, len } => {
-                    client.doc.get_text(document_id).delete(index, len).unwrap();
-                }
-            }
-
-            channels
-                .outgoing_tx
-                .send(OutgoingMessage::DocumentData(
-                    client.doc.export_from(&Default::default()),
-                ))
-                .await
-                .unwrap();
-        }
-        ClientMessage::CreateDocument {
-            name,
-            initial_content,
-        } => {
-            let id = generate_unique_id(&name, &mut client.doc);
-
-            client.doc.get_text(id.as_str()).update(&initial_content);
-            client.active_documents.insert(
-                id.clone(),
-                add_doc_change_subscription(&mut client.doc, &id, channels.stdout_tx.clone()),
-            );
-
-            info!("Created new document with id {}", id);
-
-            channels
-                .outgoing_tx
-                .send(OutgoingMessage::DocumentData(
-                    client.doc.export_from(&Default::default()),
-                ))
-                .await
-                .unwrap();
-            channels
-                .stdout_tx
-                .send(ClientMessage::CreateDocumentResponse { id })
-                .await
-                .unwrap();
-        }
-        ClientMessage::JoinDocument { id } => {
-            if client.active_documents.contains_key(&id) {
-                error!(
-                    "Client attempted to join document that is already active: {}",
-                    id
-                );
-                // TODO Broadcast error to frontend.
-
-                return;
-            }
-            if client.doc.get_text(id.as_str()).is_empty() {
-                error!("Client attempted to join document with no content: {}", id);
-                // TODO Broadcast error to frontend.
-
-                return;
-            }
-
-            client.active_documents.insert(
-                id.clone(),
-                add_doc_change_subscription(&mut client.doc, &id, channels.stdout_tx.clone()),
-            );
-            info!("Joined document with id {}", id);
-
-            channels
-                .stdout_tx
-                .send(ClientMessage::JoinDocumentResponse {
-                    id: id.clone(),
-                    current_content: client.doc.get_text(id.as_str()).to_string(),
-                })
-                .await
-                .unwrap();
-        }
-    }
 }
 
 fn generate_unique_id(name: &str, doc: &mut LoroDoc) -> String {

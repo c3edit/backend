@@ -12,7 +12,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
     },
-    sync::mpsc::Receiver,
+    sync::mpsc::{Receiver, Sender},
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -63,6 +63,10 @@ enum ClientMessage {
         document_id: String,
         location: usize,
     },
+    NewCursorLocation {
+        document_id: String,
+        location: usize,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,8 +100,11 @@ pub struct Client {
     doc: LoroDoc,
     listener: TcpListener,
     channels: Channels,
+    // TODO Consolidate channels into a single event loop receiver.
     stdin_rx: Receiver<ClientMessage>,
     network_rx: Receiver<Vec<u8>>,
+    document_change_tx: Sender<String>,   // HACK
+    document_change_rx: Receiver<String>, // HACK
     active_documents: HashMap<String, DocumentInfo>,
 }
 
@@ -119,6 +126,19 @@ impl Client {
                     info!("Main task importing data");
                     self.doc.import(&data).unwrap();
                 }
+
+                Some(id) = self.document_change_rx.recv() => {
+                    info!("Main task received document change notification");
+
+                    if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
+                        self.channels.stdout_tx.send(ClientMessage::NewCursorLocation {
+                            document_id: id,
+                            location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
+                        })
+                        .await
+                        .unwrap();
+                    }
+                }
             }
         }
     }
@@ -134,6 +154,7 @@ impl Client {
         let (incoming_task_to_channel_tx, incoming_task_to_channel_rx) =
             tokio::sync::mpsc::channel(1);
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
+        let (document_change_tx, document_change_rx) = tokio::sync::mpsc::channel(10);
         info!("Channels created");
 
         let channels = Channels {
@@ -155,6 +176,8 @@ impl Client {
             channels,
             stdin_rx: stdin_task_channel_rx,
             network_rx: incoming_task_from_channel_rx,
+            document_change_tx,
+            document_change_rx,
             active_documents: HashMap::new(),
         }
     }
@@ -163,6 +186,7 @@ impl Client {
         let c_id = self.doc.get_text(id).id();
         let id = id.to_owned();
         let channel = self.channels.stdout_tx.clone();
+        let notify_channel = self.document_change_tx.clone();
         self.doc.subscribe(
             &c_id,
             Arc::new(move |change| {
@@ -177,6 +201,7 @@ impl Client {
                 // inside a Tokio thread, which should never block (and will
                 // panic if it does).
                 let stdout_task_channel_tx = channel.clone();
+                let notify_channel = notify_channel.clone();
                 let id = id.clone();
                 tokio::spawn(async move {
                     for change in changes {
@@ -186,6 +211,8 @@ impl Client {
                         };
                         stdout_task_channel_tx.send(message).await.unwrap();
                     }
+
+                    notify_channel.send(id.clone()).await.unwrap();
                 });
             }),
         )
@@ -231,7 +258,8 @@ impl Client {
             // Messages that should only ever be sent to the self.
             ClientMessage::AddPeerResponse { .. }
             | ClientMessage::CreateDocumentResponse { .. }
-            | ClientMessage::JoinDocumentResponse { .. } => {
+            | ClientMessage::JoinDocumentResponse { .. }
+            | ClientMessage::NewCursorLocation { .. } => {
                 error!(
                     "Received message which should only be sent to the self: {:?}",
                     message

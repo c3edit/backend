@@ -3,7 +3,7 @@ mod tasks;
 mod utils;
 
 use channels::{Channels, OutgoingMessage};
-use loro::{LoroDoc, SubID, TextDelta};
+use loro::{LoroDoc, SubID};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tasks::*;
@@ -166,31 +166,7 @@ impl Client {
                     return;
                 }
 
-                let mut changes = Vec::new();
-                for event in change.events {
-                    let diffs = event.diff.as_text().unwrap();
-                    let mut index = 0;
-
-                    for diff in diffs {
-                        match diff {
-                            TextDelta::Retain { retain, .. } => {
-                                index += retain;
-                            }
-                            TextDelta::Insert { insert, .. } => {
-                                changes.push(Change::Insert {
-                                    index,
-                                    text: insert.to_string(),
-                                });
-                            }
-                            TextDelta::Delete { delete, .. } => {
-                                changes.push(Change::Delete {
-                                    index,
-                                    len: *delete,
-                                });
-                            }
-                        }
-                    }
-                }
+                let changes = diffs_to_changes(&change.events);
 
                 // We have to spawn a new task here because this callback can't
                 // be async, and we can't use `blocking_send` because this runs

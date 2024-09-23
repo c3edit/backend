@@ -102,59 +102,10 @@ impl Client {
                         channels.outgoing_tx.clone(),
                     ).await;
                 }
+
                 Some(message) = stdin_task_channel_rx.recv() => {
-                    debug!("Main task received from stdin: {:?}", message);
-
-                    match message {
-                        // Messages that should only ever be sent to the client.
-                        ClientMessage::PeerAdded{..} => {
-                            error!("Received message which should only be sent to the client: {:?}", message);
-                        },
-                        ClientMessage::AddPeer{address} => {
-                            debug!("Connecting to peer at {}", address);
-                            let socket = TcpStream::connect(&address).await.unwrap();
-                            socket.set_nodelay(true).unwrap();
-
-                            let (read, write) = socket.into_split();
-                            let read_framed = tokio_serde::SymmetricallyFramed::new(
-                                FramedRead::new(read, LengthDelimitedCodec::new()),
-                                SymmetricalJson::<BackendMessage>::default(),
-                            );
-                            let write_framed = tokio_serde::SymmetricallyFramed::new(
-                                FramedWrite::new(write, LengthDelimitedCodec::new()),
-                                SymmetricalJson::<BackendMessage>::default(),
-                            );
-
-                            channels.incoming_to_tx.send(read_framed).await.unwrap();
-                            channels.outgoing_tx.send(OutgoingMessage::NewSocket(write_framed)).await.unwrap();
-
-                            debug!("Connected to peer at {}", address);
-                            channels.stdout_tx.send(ClientMessage::PeerAdded{address}).await.unwrap();
-                        },
-                        ClientMessage::Change{change} =>  {
-                            match change {
-                                Change::Insert { index, text } => {
-                                    self.doc.get_text("text").insert(index, &text).unwrap();
-                                }
-                                Change::Delete { index, len } => {
-                                    self.doc.get_text("text").delete(index, len).unwrap();
-                                }
-                            }
-
-                            channels.outgoing_tx
-                            .send(OutgoingMessage::DocumentData(self.doc.export_from(&Default::default())))
-                            .await
-                            .unwrap();
-                        },
-                        ClientMessage::CreateDocument{initial_content} => {
-                            self.doc.get_text("text").update(&initial_content);
-                            channels.outgoing_tx
-                            .send(OutgoingMessage::DocumentData(self.doc.export_from(&Default::default())))
-                            .await
-                            .unwrap();
-                        }
-                    }
-                },
+                    handle_stdin_message(&mut self, channels.clone(), message).await;
+                }
 
                 Some(data) = incoming_task_from_channel_rx.recv() => {
                     debug!("Main task importing data");
@@ -308,4 +259,75 @@ async fn accept_new_connection(
         })
         .await
         .unwrap();
+}
+
+async fn handle_stdin_message(client: &mut Client, channels: Channels, message: ClientMessage) {
+    debug!("Main task received from stdin: {:?}", message);
+
+    match message {
+        // Messages that should only ever be sent to the client.
+        ClientMessage::PeerAdded { .. } => {
+            error!(
+                "Received message which should only be sent to the client: {:?}",
+                message
+            );
+        }
+        ClientMessage::AddPeer { address } => {
+            debug!("Connecting to peer at {}", address);
+            let socket = TcpStream::connect(&address).await.unwrap();
+            socket.set_nodelay(true).unwrap();
+
+            let (read, write) = socket.into_split();
+            let read_framed = tokio_serde::SymmetricallyFramed::new(
+                FramedRead::new(read, LengthDelimitedCodec::new()),
+                SymmetricalJson::<BackendMessage>::default(),
+            );
+            let write_framed = tokio_serde::SymmetricallyFramed::new(
+                FramedWrite::new(write, LengthDelimitedCodec::new()),
+                SymmetricalJson::<BackendMessage>::default(),
+            );
+
+            channels.incoming_to_tx.send(read_framed).await.unwrap();
+            channels
+                .outgoing_tx
+                .send(OutgoingMessage::NewSocket(write_framed))
+                .await
+                .unwrap();
+
+            debug!("Connected to peer at {}", address);
+            channels
+                .stdout_tx
+                .send(ClientMessage::PeerAdded { address })
+                .await
+                .unwrap();
+        }
+        ClientMessage::Change { change } => {
+            match change {
+                Change::Insert { index, text } => {
+                    client.doc.get_text("text").insert(index, &text).unwrap();
+                }
+                Change::Delete { index, len } => {
+                    client.doc.get_text("text").delete(index, len).unwrap();
+                }
+            }
+
+            channels
+                .outgoing_tx
+                .send(OutgoingMessage::DocumentData(
+                    client.doc.export_from(&Default::default()),
+                ))
+                .await
+                .unwrap();
+        }
+        ClientMessage::CreateDocument { initial_content } => {
+            client.doc.get_text("text").update(&initial_content);
+            channels
+                .outgoing_tx
+                .send(OutgoingMessage::DocumentData(
+                    client.doc.export_from(&Default::default()),
+                ))
+                .await
+                .unwrap();
+        }
+    }
 }

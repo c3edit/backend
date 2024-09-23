@@ -49,6 +49,12 @@ enum ClientMessage {
     Change {
         change: Change,
     },
+    JoinDocument {
+        id: String,
+    },
+    JoinDocumentResponse {
+        current_content: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -278,7 +284,9 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
 
     match message {
         // Messages that should only ever be sent to the client.
-        ClientMessage::AddPeerResponse { .. } | ClientMessage::CreateDocumentResponse { .. } => {
+        ClientMessage::AddPeerResponse { .. }
+        | ClientMessage::CreateDocumentResponse { .. }
+        | ClientMessage::JoinDocumentResponse { .. } => {
             error!(
                 "Received message which should only be sent to the client: {:?}",
                 message
@@ -352,6 +360,34 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
             channels
                 .stdout_tx
                 .send(ClientMessage::CreateDocumentResponse { id })
+                .await
+                .unwrap();
+        }
+        ClientMessage::JoinDocument { id } => {
+            if client.active_documents.contains(&id) {
+                error!(
+                    "Client attempted to join document that is already active: {}",
+                    id
+                );
+                // TODO Broadcast error to frontend.
+
+                return;
+            }
+            if client.doc.get_text(id.as_str()).is_empty() {
+                error!("Client attempted to join document with no content: {}", id);
+                // TODO Broadcast error to frontend.
+
+                return;
+            }
+
+            client.active_documents.push(id.clone());
+            info!("Joined document with id {}", id);
+
+            channels
+                .stdout_tx
+                .send(ClientMessage::JoinDocumentResponse {
+                    current_content: client.doc.get_text(id.as_str()).to_string(),
+                })
                 .await
                 .unwrap();
         }

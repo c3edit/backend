@@ -218,6 +218,16 @@ impl Client {
         )
     }
 
+    async fn broadcast_all_data(&mut self) {
+        self.channels
+            .outgoing_tx
+            .send(OutgoingMessage::DocumentData(
+                self.doc.export_from(&Default::default()),
+            ))
+            .await
+            .unwrap();
+    }
+
     async fn accept_new_connection(&mut self, (socket, addr): (TcpStream, std::net::SocketAddr)) {
         let (read, write) = socket.into_split();
 
@@ -242,6 +252,7 @@ impl Client {
             .unwrap();
 
         info!("Accepted connection from peer at {}", addr);
+        self.broadcast_all_data().await;
         self.channels
             .stdout_tx
             .send(ClientMessage::AddPeerResponse {
@@ -292,6 +303,7 @@ impl Client {
                     .unwrap();
 
                 info!("Connected to peer at {}", address);
+                self.broadcast_all_data().await;
                 self.channels
                     .stdout_tx
                     .send(ClientMessage::AddPeerResponse { address })
@@ -338,13 +350,7 @@ impl Client {
 
                 info!("Created new document with id {}", id);
 
-                self.channels
-                    .outgoing_tx
-                    .send(OutgoingMessage::DocumentData(
-                        self.doc.export_from(&Default::default()),
-                    ))
-                    .await
-                    .unwrap();
+                self.broadcast_all_data().await;
                 self.channels
                     .stdout_tx
                     .send(ClientMessage::CreateDocumentResponse { id })

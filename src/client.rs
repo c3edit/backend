@@ -1,3 +1,6 @@
+mod channels;
+
+use channels::{Channels, OutgoingMessage};
 use futures::{SinkExt, TryStreamExt};
 use loro::{LoroDoc, TextDelta};
 use serde::{Deserialize, Serialize};
@@ -65,22 +68,27 @@ impl Client {
     pub async fn begin_event_loop(mut self) {
         let (stdin_task_channel_tx, mut stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        let (incoming_task_channel_tx, mut incoming_task_channel_rx) =
+        let (incoming_task_from_channel_tx, mut incoming_task_from_channel_rx) =
             tokio::sync::mpsc::channel(10);
-        let (incoming_task_socket_channel_tx, incoming_task_socket_channel_rx) =
+        let (incoming_task_to_channel_tx, incoming_task_to_channel_rx) =
             tokio::sync::mpsc::channel(1);
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        let (outgoing_task_socket_channel_tx, outgoing_task_socket_channel_rx) =
-            tokio::sync::mpsc::channel(1);
         debug!("Channels created");
 
-        begin_incoming_task(incoming_task_channel_tx, incoming_task_socket_channel_rx);
-        begin_outgoing_task(outgoing_task_channel_rx, outgoing_task_socket_channel_rx);
-        begin_stdin_task(stdin_task_channel_tx);
+        let channels = Channels {
+            stdin_tx: stdin_task_channel_tx,
+            stdout_tx: stdout_task_channel_tx,
+            incoming_to_tx: incoming_task_to_channel_tx,
+            outgoing_tx: outgoing_task_channel_tx,
+        };
+
+        begin_incoming_task(incoming_task_from_channel_tx, incoming_task_to_channel_rx);
+        begin_outgoing_task(outgoing_task_channel_rx);
+        begin_stdin_task(channels.stdin_tx.clone());
         begin_stdout_task(stdout_task_channel_rx);
         debug!("Tasks started");
 
-        add_doc_change_subsription(&mut self.doc, stdout_task_channel_tx.clone());
+        add_doc_change_subsription(&mut self.doc, channels.stdout_tx.clone());
         debug!("Subscribed to document");
 
         debug!("Entering main event loop");
@@ -89,9 +97,9 @@ impl Client {
                 Ok(socket) = self.listener.accept() => {
                     accept_new_connection(
                         socket,
-                        stdout_task_channel_tx.clone(),
-                        incoming_task_socket_channel_tx.clone(),
-                        outgoing_task_socket_channel_tx.clone()
+                        channels.stdout_tx.clone(),
+                        channels.incoming_to_tx.clone(),
+                        channels.outgoing_tx.clone(),
                     ).await;
                 }
                 Some(message) = stdin_task_channel_rx.recv() => {
@@ -117,11 +125,11 @@ impl Client {
                                 SymmetricalJson::<BackendMessage>::default(),
                             );
 
-                            incoming_task_socket_channel_tx.send(read_framed).await.unwrap();
-                            outgoing_task_socket_channel_tx.send(write_framed).await.unwrap();
+                            channels.incoming_to_tx.send(read_framed).await.unwrap();
+                            channels.outgoing_tx.send(OutgoingMessage::NewSocket(write_framed)).await.unwrap();
 
                             debug!("Connected to peer at {}", address);
-                            stdout_task_channel_tx.send(ClientMessage::PeerAdded{address}).await.unwrap();
+                            channels.stdout_tx.send(ClientMessage::PeerAdded{address}).await.unwrap();
                         },
                         ClientMessage::Change{change} =>  {
                             match change {
@@ -133,22 +141,22 @@ impl Client {
                                 }
                             }
 
-                            outgoing_task_channel_tx
-                            .send(self.doc.export_from(&Default::default()))
+                            channels.outgoing_tx
+                            .send(OutgoingMessage::DocumentData(self.doc.export_from(&Default::default())))
                             .await
                             .unwrap();
                         },
                         ClientMessage::CreateDocument{initial_content} => {
                             self.doc.get_text("text").update(&initial_content);
-                            outgoing_task_channel_tx
-                            .send(self.doc.export_from(&Default::default()))
+                            channels.outgoing_tx
+                            .send(OutgoingMessage::DocumentData(self.doc.export_from(&Default::default())))
                             .await
                             .unwrap();
                         }
                     }
                 },
 
-                Some(data) = incoming_task_channel_rx.recv() => {
+                Some(data) = incoming_task_from_channel_rx.recv() => {
                     debug!("Main task importing data");
                     self.doc.import(&data).unwrap();
                 }
@@ -157,9 +165,9 @@ impl Client {
     }
 }
 
-fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>) {
+fn begin_incoming_task(tx: Sender<Vec<u8>>, mut rx: Receiver<ReadSocket>) {
     tokio::spawn(async move {
-        while let Some(mut socket) = socket_rx.recv().await {
+        while let Some(mut socket) = rx.recv().await {
             let tx = tx.clone();
 
             // TODO store join handles so we can cancel tasks when disconnecting.
@@ -174,21 +182,23 @@ fn begin_incoming_task(tx: Sender<Vec<u8>>, mut socket_rx: Receiver<ReadSocket>)
     });
 }
 
-fn begin_outgoing_task(mut rx: Receiver<Vec<u8>>, mut socket_rx: Receiver<WriteSocket>) {
+fn begin_outgoing_task(mut rx: Receiver<OutgoingMessage>) {
     tokio::spawn(async move {
         let mut sockets = Vec::new();
 
         loop {
-            tokio::select! {
-                Some(socket) = socket_rx.recv() => {
-                    sockets.push(socket);
-                },
-                Some(data) = rx.recv() => {
-                    let message = BackendMessage::DocumentSync { data };
-                    debug!("Sending to network: {:?}", message);
+            if let Some(message) = rx.recv().await {
+                match message {
+                    OutgoingMessage::NewSocket(socket) => {
+                        sockets.push(socket);
+                    }
+                    OutgoingMessage::DocumentData(data) => {
+                        let message = BackendMessage::DocumentSync { data };
+                        debug!("Sending to network: {:?}", message);
 
-                    for socket in sockets.iter_mut() {
-                        socket.send(message.clone()).await.unwrap();
+                        for socket in sockets.iter_mut() {
+                            socket.send(message.clone()).await.unwrap();
+                        }
                     }
                 }
             }
@@ -271,8 +281,8 @@ fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>)
 async fn accept_new_connection(
     (socket, addr): (TcpStream, std::net::SocketAddr),
     stdout_task_channel_tx: Sender<ClientMessage>,
-    incoming_task_socket_channel_tx: Sender<ReadSocket>,
-    outgoing_task_socket_channel_tx: Sender<WriteSocket>,
+    incoming_task_to_channel_tx: Sender<ReadSocket>,
+    outgoing_task_channel_tx: Sender<OutgoingMessage>,
 ) {
     let (read, write) = socket.into_split();
 
@@ -285,12 +295,9 @@ async fn accept_new_connection(
         SymmetricalJson::<BackendMessage>::default(),
     );
 
-    incoming_task_socket_channel_tx
-        .send(read_framed)
-        .await
-        .unwrap();
-    outgoing_task_socket_channel_tx
-        .send(write_framed)
+    incoming_task_to_channel_tx.send(read_framed).await.unwrap();
+    outgoing_task_channel_tx
+        .send(OutgoingMessage::NewSocket(write_framed))
         .await
         .unwrap();
 

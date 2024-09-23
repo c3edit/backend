@@ -54,6 +54,7 @@ enum ClientMessage {
         id: String,
     },
     JoinDocumentResponse {
+        id: String,
         current_content: String,
     },
 }
@@ -408,6 +409,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
             channels
                 .stdout_tx
                 .send(ClientMessage::JoinDocumentResponse {
+                    id: id.clone(),
                     current_content: client.doc.get_text(id.as_str()).to_string(),
                 })
                 .await

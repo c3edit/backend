@@ -1,12 +1,11 @@
 mod client;
 
 use std::io;
-
 use clap::Parser;
 use client::Client;
 use color_eyre::Result;
 use tokio::net::TcpListener;
-use tracing::{debug, level_filters::LevelFilter};
+use tracing::{info, level_filters::LevelFilter};
 
 /// Real-time cross-editor collaborative editing backend.
 #[derive(Debug, Parser)]
@@ -42,13 +41,13 @@ async fn main() -> Result<()> {
 
     let addr = format!("{}:{}", args.address, args.port);
     let listener = TcpListener::bind(&addr).await.unwrap();
-    debug!("Listening on {addr}");
+    info!("Listening on {addr}");
 
     let client = Client::new(listener);
 
-    debug!("Entering client event loop");
+    info!("Entering client event loop");
     client.begin_event_loop().await;
 
-    debug!("Client exited, returning");
+    info!("Client exited, returning");
     Ok(())
 }

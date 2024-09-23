@@ -15,7 +15,7 @@ use tokio::{
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use tracing::{debug, error};
+use tracing::{error, info};
 
 // I hate Rust sometimes.
 type WriteSocket = tokio_serde::SymmetricallyFramed<
@@ -73,7 +73,7 @@ impl Client {
         let (incoming_task_to_channel_tx, incoming_task_to_channel_rx) =
             tokio::sync::mpsc::channel(1);
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        debug!("Channels created");
+        info!("Channels created");
 
         let channels = Channels {
             stdin_tx: stdin_task_channel_tx,
@@ -86,12 +86,12 @@ impl Client {
         begin_outgoing_task(outgoing_task_channel_rx);
         begin_stdin_task(channels.stdin_tx.clone());
         begin_stdout_task(stdout_task_channel_rx);
-        debug!("Tasks started");
+        info!("Tasks started");
 
         add_doc_change_subsription(&mut self.doc, channels.stdout_tx.clone());
-        debug!("Subscribed to document");
+        info!("Subscribed to document");
 
-        debug!("Entering main event loop");
+        info!("Entering main event loop");
         loop {
             tokio::select! {
                 Ok(socket) = self.listener.accept() => {
@@ -106,7 +106,7 @@ impl Client {
                 }
 
                 Some(data) = incoming_task_from_channel_rx.recv() => {
-                    debug!("Main task importing data");
+                    info!("Main task importing data");
                     self.doc.import(&data).unwrap();
                 }
             }
@@ -122,7 +122,7 @@ fn begin_incoming_task(tx: Sender<Vec<u8>>, mut rx: Receiver<ReadSocket>) {
             // TODO store join handles so we can cancel tasks when disconnecting.
             tokio::spawn(async move {
                 while let Some(message) = socket.try_next().await.unwrap() {
-                    debug!("Received from network: {:?}", message);
+                    info!("Received from network: {:?}", message);
                     let BackendMessage::DocumentSync { data } = message;
                     tx.send(data).await.unwrap();
                 }
@@ -143,7 +143,7 @@ fn begin_outgoing_task(mut rx: Receiver<OutgoingMessage>) {
                     }
                     OutgoingMessage::DocumentData(data) => {
                         let message = BackendMessage::DocumentSync { data };
-                        debug!("Sending to network: {:?}", message);
+                        info!("Sending to network: {:?}", message);
 
                         for socket in sockets.iter_mut() {
                             socket.send(message.clone()).await.unwrap();
@@ -162,7 +162,7 @@ fn begin_stdin_task(tx: Sender<ClientMessage>) {
 
         while let Ok(Some(line)) = lines.next_line().await {
             let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
-            debug!("Received message from stdin: {:?}", message);
+            info!("Received message from stdin: {:?}", message);
             tx.send(message).await.unwrap();
         }
     });
@@ -172,7 +172,7 @@ fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
             let serialized = serde_json::to_string(&message).unwrap();
-            debug!("Sending message to stdout: {:?}", serialized);
+            info!("Sending message to stdout: {:?}", serialized);
             // TODO should this be using Tokio's stdout?
             let mut stdout = std::io::stdout();
             stdout.write_all(serialized.as_bytes()).unwrap();
@@ -249,7 +249,7 @@ async fn accept_new_connection(
         .await
         .unwrap();
 
-    debug!("Accepted connection from peer at {}", addr);
+    info!("Accepted connection from peer at {}", addr);
     channels
         .stdout_tx
         .send(ClientMessage::PeerAdded {
@@ -260,7 +260,7 @@ async fn accept_new_connection(
 }
 
 async fn handle_stdin_message(client: &mut Client, channels: Channels, message: ClientMessage) {
-    debug!("Main task received from stdin: {:?}", message);
+    info!("Main task received from stdin: {:?}", message);
 
     match message {
         // Messages that should only ever be sent to the client.
@@ -271,7 +271,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
             );
         }
         ClientMessage::AddPeer { address } => {
-            debug!("Connecting to peer at {}", address);
+            info!("Connecting to peer at {}", address);
             let socket = TcpStream::connect(&address).await.unwrap();
             socket.set_nodelay(true).unwrap();
 
@@ -292,7 +292,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 .await
                 .unwrap();
 
-            debug!("Connected to peer at {}", address);
+            info!("Connected to peer at {}", address);
             channels
                 .stdout_tx
                 .send(ClientMessage::PeerAdded { address })

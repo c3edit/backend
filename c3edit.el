@@ -86,7 +86,8 @@ Start as server if SERVER is non-nil."
   (unless c3edit--process
     (user-error "Backend for c3edit is not running"))
   (kill-process c3edit--process)
-  (setq c3edit--process nil)
+  (setq c3edit--process nil
+        c3edit--buffers nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function)
   (remove-hook 'post-command-hook #'c3edit--post-command-function))
 

@@ -3,7 +3,7 @@ mod tasks;
 mod utils;
 
 use channels::{Channels, OutgoingMessage};
-use loro::{LoroDoc, SubID};
+use loro::{cursor::Cursor, LoroDoc, SubID};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tasks::*;
@@ -59,6 +59,10 @@ enum ClientMessage {
         id: String,
         current_content: String,
     },
+    SetCursor {
+        document_id: String,
+        location: usize,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,7 +98,7 @@ pub struct Client {
     channels: Channels,
     stdin_rx: Receiver<ClientMessage>,
     network_rx: Receiver<Vec<u8>>,
-    active_documents: HashMap<String, SubID>,
+    active_documents: HashMap<String, DocumentInfo>,
 }
 
 impl Client {
@@ -296,7 +300,13 @@ impl Client {
                 self.doc.get_text(id.as_str()).update(&initial_content);
 
                 let subscription = self.add_doc_change_subscription(&id);
-                self.active_documents.insert(id.clone(), subscription);
+                self.active_documents.insert(
+                    id.clone(),
+                    DocumentInfo {
+                        sub_id: subscription,
+                        cursor: None,
+                    },
+                );
 
                 info!("Created new document with id {}", id);
 
@@ -331,7 +341,13 @@ impl Client {
                 }
 
                 let subscription = self.add_doc_change_subscription(&id);
-                self.active_documents.insert(id.clone(), subscription);
+                self.active_documents.insert(
+                    id.clone(),
+                    DocumentInfo {
+                        sub_id: subscription,
+                        cursor: None,
+                    },
+                );
 
                 info!("Joined document with id {}", id);
 
@@ -344,6 +360,21 @@ impl Client {
                     .await
                     .unwrap();
             }
+            ClientMessage::SetCursor {
+                document_id,
+                location,
+            } => {
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+                let text = self.doc.get_text(document_id.as_str());
+                doc_info.cursor = text.get_cursor(location, Default::default());
+
+                // TODO Cursors for other users.
+            }
         }
     }
+}
+
+struct DocumentInfo {
+    sub_id: SubID,
+    cursor: Option<Cursor>,
 }

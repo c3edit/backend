@@ -2,9 +2,9 @@ mod channels;
 
 use channels::{Channels, OutgoingMessage};
 use futures::{SinkExt, TryStreamExt};
-use loro::{LoroDoc, TextDelta};
+use loro::{LoroDoc, SubID, TextDelta};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, sync::Arc};
+use std::{collections::HashMap, io::Write, sync::Arc};
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     net::{
@@ -75,7 +75,7 @@ enum BackendMessage {
 pub struct Client {
     doc: LoroDoc,
     listener: TcpListener,
-    active_documents: Vec<String>,
+    active_documents: HashMap<String, SubID>,
 }
 
 impl Client {
@@ -83,7 +83,7 @@ impl Client {
         Client {
             doc: LoroDoc::new(),
             listener,
-            active_documents: Vec::new(),
+            active_documents: HashMap::new(),
         }
     }
 
@@ -109,9 +109,6 @@ impl Client {
         begin_stdin_task(channels.stdin_tx.clone());
         begin_stdout_task(stdout_task_channel_rx);
         info!("Tasks started");
-
-        add_doc_change_subsription(&mut self.doc, channels.stdout_tx.clone());
-        info!("Subscribed to document");
 
         info!("Entering main event loop");
         loop {
@@ -183,8 +180,8 @@ fn begin_stdin_task(tx: Sender<ClientMessage>) {
         let mut lines = stdin.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
+            info!("Received message from stdin: {}", line);
             let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
-            info!("Received message from stdin: {:?}", message);
             tx.send(message).await.unwrap();
         }
     });
@@ -203,64 +200,63 @@ fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
     });
 }
 
-fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>) {
-    doc.subscribe_root(Arc::new(move |change| {
-        if !change.triggered_by.is_import() {
-            return;
-        }
-        // This is ugly, but I can't think of a better way to get the document
-        // ID (I don't feel like tracking my IDs <-> ContainerIDs). The
-        // `ContainerID` enum will always be the `Root` variant. Source: trust
-        // me bro, I read the source code.
-        let doc = change
-            .current_target
-            .unwrap()
-            .as_root()
-            .unwrap()
-            .0
-            .to_string();
+fn add_doc_change_subscription(
+    doc: &mut LoroDoc,
+    id: &str,
+    channel: Sender<ClientMessage>,
+) -> SubID {
+    let c_id = doc.get_text(id).id();
+    let id = id.to_owned();
+    doc.subscribe(
+        &c_id,
+        Arc::new(move |change| {
+            if !change.triggered_by.is_import() {
+                return;
+            }
 
-        let mut changes = Vec::new();
-        for event in change.events {
-            let diffs = event.diff.as_text().unwrap();
-            let mut index = 0;
+            let mut changes = Vec::new();
+            for event in change.events {
+                let diffs = event.diff.as_text().unwrap();
+                let mut index = 0;
 
-            for diff in diffs {
-                match diff {
-                    TextDelta::Retain { retain, .. } => {
-                        index += retain;
-                    }
-                    TextDelta::Insert { insert, .. } => {
-                        changes.push(Change::Insert {
-                            index,
-                            text: insert.to_string(),
-                        });
-                    }
-                    TextDelta::Delete { delete, .. } => {
-                        changes.push(Change::Delete {
-                            index,
-                            len: *delete,
-                        });
+                for diff in diffs {
+                    match diff {
+                        TextDelta::Retain { retain, .. } => {
+                            index += retain;
+                        }
+                        TextDelta::Insert { insert, .. } => {
+                            changes.push(Change::Insert {
+                                index,
+                                text: insert.to_string(),
+                            });
+                        }
+                        TextDelta::Delete { delete, .. } => {
+                            changes.push(Change::Delete {
+                                index,
+                                len: *delete,
+                            });
+                        }
                     }
                 }
             }
-        }
 
-        // We have to spawn a new task here because this callback can't
-        // be async, and we can't use `blocking_send` because this runs
-        // inside a Tokio thread, which should never block (and will
-        // panic if it does).
-        let stdout_task_channel_tx = channel.clone();
-        tokio::spawn(async move {
-            for change in changes {
-                let message = ClientMessage::Change {
-                    document_id: doc.clone(),
-                    change,
-                };
-                stdout_task_channel_tx.send(message).await.unwrap();
-            }
-        });
-    }));
+            // We have to spawn a new task here because this callback can't
+            // be async, and we can't use `blocking_send` because this runs
+            // inside a Tokio thread, which should never block (and will
+            // panic if it does).
+            let stdout_task_channel_tx = channel.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                for change in changes {
+                    let message = ClientMessage::Change {
+                        document_id: id.clone(),
+                        change,
+                    };
+                    stdout_task_channel_tx.send(message).await.unwrap();
+                }
+            });
+        }),
+    )
 }
 
 async fn accept_new_connection(
@@ -369,7 +365,10 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
             let id = generate_unique_id(&name, &mut client.doc);
 
             client.doc.get_text(id.as_str()).update(&initial_content);
-            client.active_documents.push(id.clone());
+            client.active_documents.insert(
+                id.clone(),
+                add_doc_change_subscription(&mut client.doc, &id, channels.stdout_tx.clone()),
+            );
 
             info!("Created new document with id {}", id);
 
@@ -387,7 +386,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 .unwrap();
         }
         ClientMessage::JoinDocument { id } => {
-            if client.active_documents.contains(&id) {
+            if client.active_documents.contains_key(&id) {
                 error!(
                     "Client attempted to join document that is already active: {}",
                     id
@@ -403,7 +402,10 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 return;
             }
 
-            client.active_documents.push(id.clone());
+            client.active_documents.insert(
+                id.clone(),
+                add_doc_change_subscription(&mut client.doc, &id, channels.stdout_tx.clone()),
+            );
             info!("Joined document with id {}", id);
 
             channels

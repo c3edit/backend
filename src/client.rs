@@ -97,9 +97,7 @@ impl Client {
                 Ok(socket) = self.listener.accept() => {
                     accept_new_connection(
                         socket,
-                        channels.stdout_tx.clone(),
-                        channels.incoming_to_tx.clone(),
-                        channels.outgoing_tx.clone(),
+                        channels.clone(),
                     ).await;
                 }
 
@@ -231,9 +229,7 @@ fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>)
 
 async fn accept_new_connection(
     (socket, addr): (TcpStream, std::net::SocketAddr),
-    stdout_task_channel_tx: Sender<ClientMessage>,
-    incoming_task_to_channel_tx: Sender<ReadSocket>,
-    outgoing_task_channel_tx: Sender<OutgoingMessage>,
+    channels: Channels,
 ) {
     let (read, write) = socket.into_split();
 
@@ -246,14 +242,16 @@ async fn accept_new_connection(
         SymmetricalJson::<BackendMessage>::default(),
     );
 
-    incoming_task_to_channel_tx.send(read_framed).await.unwrap();
-    outgoing_task_channel_tx
+    channels.incoming_to_tx.send(read_framed).await.unwrap();
+    channels
+        .outgoing_tx
         .send(OutgoingMessage::NewSocket(write_framed))
         .await
         .unwrap();
 
     debug!("Accepted connection from peer at {}", addr);
-    stdout_task_channel_tx
+    channels
+        .stdout_tx
         .send(ClientMessage::PeerAdded {
             address: addr.to_string(),
         })

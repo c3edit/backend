@@ -33,10 +33,22 @@ type ReadSocket = tokio_serde::SymmetricallyFramed<
 #[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
 #[serde(tag = "type")]
 enum ClientMessage {
-    AddPeer { address: String },
-    PeerAdded { address: String },
-    CreateDocument { initial_content: String },
-    Change { change: Change },
+    AddPeer {
+        address: String,
+    },
+    PeerAdded {
+        address: String,
+    },
+    CreateDocument {
+        name: String,
+        initial_content: String,
+    },
+    CreateDocumentResponse {
+        id: String,
+    },
+    Change {
+        change: Change,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,6 +67,7 @@ enum BackendMessage {
 pub struct Client {
     doc: LoroDoc,
     listener: TcpListener,
+    active_documents: Vec<String>,
 }
 
 impl Client {
@@ -62,6 +75,7 @@ impl Client {
         Client {
             doc: LoroDoc::new(),
             listener,
+            active_documents: Vec::new(),
         }
     }
 
@@ -264,7 +278,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
 
     match message {
         // Messages that should only ever be sent to the client.
-        ClientMessage::PeerAdded { .. } => {
+        ClientMessage::PeerAdded { .. } | ClientMessage::CreateDocumentResponse { .. } => {
             error!(
                 "Received message which should only be sent to the client: {:?}",
                 message
@@ -317,8 +331,17 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 .await
                 .unwrap();
         }
-        ClientMessage::CreateDocument { initial_content } => {
-            client.doc.get_text("text").update(&initial_content);
+        ClientMessage::CreateDocument {
+            name,
+            initial_content,
+        } => {
+            let id = generate_unique_id(&name, &mut client.doc);
+
+            client.doc.get_text(id.as_str()).update(&initial_content);
+            client.active_documents.push(id.clone());
+
+            info!("Created new document with id {}", id);
+
             channels
                 .outgoing_tx
                 .send(OutgoingMessage::DocumentData(
@@ -326,6 +349,23 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 ))
                 .await
                 .unwrap();
+            channels
+                .stdout_tx
+                .send(ClientMessage::CreateDocumentResponse { id })
+                .await
+                .unwrap();
         }
     }
+}
+
+fn generate_unique_id(name: &str, doc: &mut LoroDoc) -> String {
+    let mut i = 0;
+    let mut unique_name = name.to_string();
+
+    while !doc.get_text(unique_name.as_str()).is_empty() {
+        i += 1;
+        unique_name = format!("{} {}", name, i);
+    }
+
+    unique_name
 }

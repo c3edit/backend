@@ -56,6 +56,11 @@
   "Whether current changes being inserted are from backend.
 Dynamically-scoped variable to prevent infinitely-recursing changes.")
 
+(defsubst c3edit--send-message (message)
+  "Serialize MESSAGE into JSON and send it to the c3edit backend."
+  (process-send-string
+   c3edit--process (concat (json-encode message) "\n")))
+
 (defun c3edit-start ()
   "Start the c3edit backend.
 Start as server if SERVER is non-nil."
@@ -87,11 +92,6 @@ Start as server if SERVER is non-nil."
   (interactive "sAddress: ")
   (c3edit--send-message `((type . "add_peer")
                           (address . ,address))))
-
-(defsubst c3edit--send-message (message)
-  "Serialize MESSAGE into JSON and send it to the c3edit backend."
-  (process-send-string
-   c3edit--process (concat (json-encode message) "\n")))
 
 (defun c3edit--send-initial-data ()
   "Send initial buffer contents to backend process."

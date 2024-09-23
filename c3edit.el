@@ -74,6 +74,7 @@ Start as server if SERVER is non-nil."
     (setq c3edit--process (make-process
                            :name "c3edit"
                            :command command
+                           :connection-type 'pipe
                            :filter #'c3edit--process-filter
                            :stderr (get-buffer-create "*c3edit log*"))))
   (add-hook 'after-change-functions #'c3edit--after-change-function))

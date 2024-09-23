@@ -146,7 +146,7 @@ Processes message from TEXT."
         (pcase .type
           ("change"
            (c3edit--handle-change .change))
-          ("peer_added_response"
+          ("add_peer_response"
            (message "Successfully added peer at %s" .address))
           ("create_document_response"
            (c3edit--handle-create-document-response .id))

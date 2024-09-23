@@ -138,12 +138,12 @@ Returns list of read objects."
     (pop-to-buffer buffer)
     (message "Joined document with ID %s" id)))
 
-(defun c3edit--handle-change (change)
-  "Update buffer to reflect CHANGE.
+(defun c3edit--handle-change (id change)
+  "Update buffer to reflect CHANGE in document ID.
 CHANGE should be a variant of the `Change' enum, deserialized into an
 alist."
   (let-alist change
-    (with-current-buffer (car (rassoc .id c3edit--buffers))
+    (with-current-buffer (car (rassoc id c3edit--buffers))
       (save-excursion
         (pcase .type
           ("insert"
@@ -166,13 +166,13 @@ Processes message from TEXT."
       (let-alist message
         (pcase .type
           ("change"
-           (c3edit--handle-change .change))
+           (c3edit--handle-change .document_id .change))
           ("add_peer_response"
            (message "Successfully added peer at %s" .address))
           ("create_document_response"
            (c3edit--handle-create-document-response .id))
           ("join_document_response"
-           (c3edit--handle-join-document-response .id .content))
+           (c3edit--handle-join-document-response .id .current_content))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))

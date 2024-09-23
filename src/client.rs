@@ -47,6 +47,7 @@ enum ClientMessage {
         id: String,
     },
     Change {
+        document_id: String,
         change: Change,
     },
     JoinDocument {
@@ -206,6 +207,17 @@ fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>)
         if !change.triggered_by.is_import() {
             return;
         }
+        // This is ugly, but I can't think of a better way to get the document
+        // ID (I don't feel like tracking my IDs <-> ContainerIDs). The
+        // `ContainerID` enum will always be the `Root` variant. Source: trust
+        // me bro, I read the source code.
+        let doc = change
+            .current_target
+            .unwrap()
+            .as_root()
+            .unwrap()
+            .0
+            .to_string();
 
         let mut changes = Vec::new();
         for event in change.events {
@@ -240,7 +252,10 @@ fn add_doc_change_subsription(doc: &mut LoroDoc, channel: Sender<ClientMessage>)
         let stdout_task_channel_tx = channel.clone();
         tokio::spawn(async move {
             for change in changes {
-                let message = ClientMessage::Change { change };
+                let message = ClientMessage::Change {
+                    document_id: doc.clone(),
+                    change,
+                };
                 stdout_task_channel_tx.send(message).await.unwrap();
             }
         });
@@ -321,13 +336,20 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
                 .await
                 .unwrap();
         }
-        ClientMessage::Change { change } => {
+        ClientMessage::Change {
+            document_id,
+            change,
+        } => {
             match change {
                 Change::Insert { index, text } => {
-                    client.doc.get_text("text").insert(index, &text).unwrap();
+                    client
+                        .doc
+                        .get_text(document_id)
+                        .insert(index, &text)
+                        .unwrap();
                 }
                 Change::Delete { index, len } => {
-                    client.doc.get_text("text").delete(index, len).unwrap();
+                    client.doc.get_text(document_id).delete(index, len).unwrap();
                 }
             }
 

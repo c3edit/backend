@@ -45,8 +45,12 @@
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
+;; TODO This needs to be generalized to support multiple buffers.)
 (defvar c3edit--buffer nil
   "Current active c3edit buffer.")
+
+(defvar c3edit--document-id nil
+  "ID of current document in backend.")
 
 (defvar c3edit--synced-changes-p nil
   "Whether current changes being inserted are from backend.
@@ -92,6 +96,7 @@ Start as server if SERVER is non-nil."
 (defun c3edit--send-initial-data ()
   "Send initial buffer contents to backend process."
   (c3edit--send-message `((type . "create_document")
+                          (name . ,(buffer-name c3edit--buffer))
                           (initial_content . ,(buffer-string)))))
 
 (defun c3edit--json-read-all (string)
@@ -106,6 +111,11 @@ Returns list of read objects."
             (push (json-read) data))
         (json-end-of-file)))
     (nreverse data)))
+
+(defun c3edit--handle-create-document-response (id)
+  "Handle `create_document_response` message with data ID."
+  (setq c3edit--document-id id)
+  (message "Created document with ID %s" id))
 
 (defun c3edit--handle-change (change)
   "Update buffer to reflect CHANGE.
@@ -134,10 +144,15 @@ Processes message from TEXT."
     (dolist (message data)
       (let-alist message
         (pcase .type
-          ("change" (c3edit--handle-change .change))
-          ("peer_added_response" (message "Successfully added peer at %s" .address))
-          (_ (display-warning
-              'c3edit (format "Unknown message type: %s" .type) :warning)))))))
+          ("change"
+           (c3edit--handle-change .change))
+          ("peer_added_response"
+           (message "Successfully added peer at %s" .address))
+          ("create_document_response"
+           (c3edit--handle-create-document-response .id))
+          (_
+           (display-warning
+            'c3edit (format "Unknown message type: %s" .type) :warning)))))))
 
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.

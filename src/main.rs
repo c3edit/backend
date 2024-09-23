@@ -1,9 +1,9 @@
 mod client;
 
-use std::io;
 use clap::Parser;
-use client::Client;
+use client::ClientBuilder;
 use color_eyre::Result;
+use std::io;
 use tokio::net::TcpListener;
 use tracing::{info, level_filters::LevelFilter};
 
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(&addr).await.unwrap();
     info!("Listening on {addr}");
 
-    let client = Client::new(listener);
+    let client = ClientBuilder::new(listener).build();
 
     info!("Entering client event loop");
     client.begin_event_loop().await;

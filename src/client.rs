@@ -72,25 +72,62 @@ enum BackendMessage {
     DocumentSync { data: Vec<u8> },
 }
 
+pub struct ClientBuilder {
+    listener: TcpListener,
+}
+
+impl ClientBuilder {
+    pub fn new(listener: TcpListener) -> Self {
+        ClientBuilder { listener }
+    }
+
+    pub fn build(self) -> Client {
+        Client::new(self)
+    }
+}
+
 pub struct Client {
     doc: LoroDoc,
     listener: TcpListener,
+    channels: Channels,
+    stdin_rx: Receiver<ClientMessage>,
+    network_rx: Receiver<Vec<u8>>,
     active_documents: HashMap<String, SubID>,
 }
 
 impl Client {
-    pub fn new(listener: TcpListener) -> Self {
-        Client {
-            doc: LoroDoc::new(),
-            listener,
-            active_documents: HashMap::new(),
+    pub async fn begin_event_loop(mut self) {
+        info!("Entering main event loop");
+
+        loop {
+            tokio::select! {
+                Ok(socket) = self.listener.accept() => {
+                    accept_new_connection(
+                        socket,
+                        self.channels.clone(),
+                    ).await;
+                }
+
+                Some(message) = self.stdin_rx.recv() => {
+                    let channels = self.channels.clone();
+                    handle_stdin_message(&mut self, channels, message).await;
+                }
+
+                Some(data) = self.network_rx.recv() => {
+                    info!("Main task importing data");
+                    self.doc.import(&data).unwrap();
+                }
+            }
         }
     }
 
-    pub async fn begin_event_loop(mut self) {
-        let (stdin_task_channel_tx, mut stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
+    fn new(builder: ClientBuilder) -> Self {
+        let listener = builder.listener;
+
+        // Setup tasks
+        let (stdin_task_channel_tx, stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        let (incoming_task_from_channel_tx, mut incoming_task_from_channel_rx) =
+        let (incoming_task_from_channel_tx, incoming_task_from_channel_rx) =
             tokio::sync::mpsc::channel(10);
         let (incoming_task_to_channel_tx, incoming_task_to_channel_rx) =
             tokio::sync::mpsc::channel(1);
@@ -110,25 +147,13 @@ impl Client {
         begin_stdout_task(stdout_task_channel_rx);
         info!("Tasks started");
 
-        info!("Entering main event loop");
-        loop {
-            tokio::select! {
-                Ok(socket) = self.listener.accept() => {
-                    accept_new_connection(
-                        socket,
-                        channels.clone(),
-                    ).await;
-                }
-
-                Some(message) = stdin_task_channel_rx.recv() => {
-                    handle_stdin_message(&mut self, channels.clone(), message).await;
-                }
-
-                Some(data) = incoming_task_from_channel_rx.recv() => {
-                    info!("Main task importing data");
-                    self.doc.import(&data).unwrap();
-                }
-            }
+        Client {
+            doc: LoroDoc::new(),
+            listener,
+            channels,
+            stdin_rx: stdin_task_channel_rx,
+            network_rx: incoming_task_from_channel_rx,
+            active_documents: HashMap::new(),
         }
     }
 }

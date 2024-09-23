@@ -36,7 +36,7 @@ enum ClientMessage {
     AddPeer {
         address: String,
     },
-    PeerAdded {
+    PeerAddedResponse {
         address: String,
     },
     CreateDocument {
@@ -266,7 +266,7 @@ async fn accept_new_connection(
     info!("Accepted connection from peer at {}", addr);
     channels
         .stdout_tx
-        .send(ClientMessage::PeerAdded {
+        .send(ClientMessage::PeerAddedResponse {
             address: addr.to_string(),
         })
         .await
@@ -278,7 +278,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
 
     match message {
         // Messages that should only ever be sent to the client.
-        ClientMessage::PeerAdded { .. } | ClientMessage::CreateDocumentResponse { .. } => {
+        ClientMessage::PeerAddedResponse { .. } | ClientMessage::CreateDocumentResponse { .. } => {
             error!(
                 "Received message which should only be sent to the client: {:?}",
                 message
@@ -309,7 +309,7 @@ async fn handle_stdin_message(client: &mut Client, channels: Channels, message: 
             info!("Connected to peer at {}", address);
             channels
                 .stdout_tx
-                .send(ClientMessage::PeerAdded { address })
+                .send(ClientMessage::PeerAddedResponse { address })
                 .await
                 .unwrap();
         }

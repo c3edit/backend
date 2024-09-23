@@ -77,7 +77,8 @@ Start as server if SERVER is non-nil."
                            :connection-type 'pipe
                            :filter #'c3edit--process-filter
                            :stderr (get-buffer-create "*c3edit log*"))))
-  (add-hook 'after-change-functions #'c3edit--after-change-function))
+  (add-hook 'after-change-functions #'c3edit--after-change-function)
+  (add-hook 'post-command-hook #'c3edit--post-command-function))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -86,7 +87,8 @@ Start as server if SERVER is non-nil."
     (user-error "Backend for c3edit is not running"))
   (kill-process c3edit--process)
   (setq c3edit--process nil)
-  (remove-hook 'after-change-functions #'c3edit--after-change-function))
+  (remove-hook 'after-change-functions #'c3edit--after-change-function)
+  (remove-hook 'post-command-hook #'c3edit--post-command-function))
 
 (defun c3edit-add-peer (address)
   "Add a peer at ADDRESS."
@@ -155,6 +157,11 @@ alist."
             (1+ .index)
             (+ 1 .index .len))))))))
 
+(defun c3edit--handle-new-cursor-location (id position)
+  "Update cursor position in buffer for document ID to POSITION."
+  (with-current-buffer (car (rassoc id c3edit--buffers))
+    (goto-char (1+ position))))
+
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
 Processes message from TEXT."
@@ -174,6 +181,8 @@ Processes message from TEXT."
            (c3edit--handle-create-document-response .id))
           ("join_document_response"
            (c3edit--handle-join-document-response .id .current_content))
+          ("new_cursor_location"
+           (c3edit--handle-new-cursor-location .document_id .location))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))
@@ -194,6 +203,16 @@ BEG, END, and LEN are as documented in `after-change-functions'."
       (c3edit--send-message `((type . "change")
                               (document_id . ,document-id)
                               (change . ,change))))))
+
+;; TODO Only update cursor position if it has changed.
+;; TODO Use local hooks instead of checking current buffer.
+(defun c3edit--post-command-function ()
+  "Update c3edit backend with cursor position after command execution."
+  (when-let ((c3edit--process)
+             (document-id (cdr (assoc (current-buffer) c3edit--buffers))))
+    (c3edit--send-message `((type . "set_cursor")
+                            (document_id . ,document-id)
+                            (location . ,(1- (point)))))))
 
 (provide 'c3edit)
 

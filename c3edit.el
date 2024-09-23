@@ -45,12 +45,13 @@
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
-;; TODO This needs to be generalized to support multiple buffers.)
-(defvar c3edit--buffer nil
-  "Current active c3edit buffer.")
+(defvar c3edit--buffers nil
+  "Alist mapping active buffers to their backend IDs.")
 
-(defvar c3edit--document-id nil
-  "ID of current document in backend.")
+;; TODO Replace this with a callback-based approach with a macro in which a
+;; function can be registered to handle the next message.
+(defvar c3edit--currently-creating-buffer nil
+  "Buffer currently in the process of being created on the backend.")
 
 (defvar c3edit--synced-changes-p nil
   "Whether current changes being inserted are from backend.
@@ -75,7 +76,6 @@ Start as server if SERVER is non-nil."
                            :command command
                            :filter #'c3edit--process-filter
                            :stderr (get-buffer-create "*c3edit log*"))))
-  (setq c3edit--buffer (current-buffer))
   (add-hook 'after-change-functions #'c3edit--after-change-function))
 
 (defun c3edit-stop ()
@@ -93,11 +93,21 @@ Start as server if SERVER is non-nil."
   (c3edit--send-message `((type . "add_peer")
                           (address . ,address))))
 
-(defun c3edit--send-initial-data ()
-  "Send initial buffer contents to backend process."
+(defun c3edit-create-document (buffer)
+  "Create a new c3edit document with BUFFER's contents.
+When called interactively, BUFFER is the current buffer."
+  (interactive (list (current-buffer)))
   (c3edit--send-message `((type . "create_document")
-                          (name . ,(buffer-name c3edit--buffer))
-                          (initial_content . ,(buffer-string)))))
+                          (name . ,(buffer-name buffer))
+                          (initial_content . ,(with-current-buffer buffer
+                                                (buffer-string)))))
+  (setq c3edit--currently-creating-buffer buffer))
+
+(defun c3edit-join-document (id)
+  "Join document with ID."
+  (interactive "sDocument ID: ")
+  (c3edit--send-message `((type . "join_document")
+                          (id . ,id))))
 
 (defun c3edit--json-read-all (string)
   "Read all JSON objects from STRING.
@@ -114,16 +124,27 @@ Returns list of read objects."
 
 (defun c3edit--handle-create-document-response (id)
   "Handle `create_document_response` message with data ID."
-  (setq c3edit--document-id id)
-  (message "Created document with ID %s" id))
+  (push `(,c3edit--currently-creating-buffer . ,id)
+        c3edit--buffers)
+  (message "Document created with ID %s" id))
+
+(defun c3edit--handle-join-document-response (id content)
+  "Handle `join_document_response` for document ID with initial CONTENT."
+  (let ((buffer (get-buffer-create id)))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert content))
+    (push `(,buffer . ,id) c3edit--buffers)
+    (pop-to-buffer buffer)
+    (message "Joined document with ID %s" id)))
 
 (defun c3edit--handle-change (change)
   "Update buffer to reflect CHANGE.
 CHANGE should be a variant of the `Change' enum, deserialized into an
 alist."
-  (with-current-buffer c3edit--buffer
-    (save-excursion
-      (let-alist change
+  (let-alist change
+    (with-current-buffer (car (rassoc .id c3edit--buffers))
+      (save-excursion
         (pcase .type
           ("insert"
            (goto-char (1+ .index))
@@ -150,6 +171,8 @@ Processes message from TEXT."
            (message "Successfully added peer at %s" .address))
           ("create_document_response"
            (c3edit--handle-create-document-response .id))
+          ("join_document_response"
+           (c3edit--handle-join-document-response .id .content))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))
@@ -157,8 +180,8 @@ Processes message from TEXT."
 (defun c3edit--after-change-function (beg end len)
   "Update c3edit backend after a change to buffer.
 BEG, END, and LEN are as documented in `after-change-functions'."
-  (when (and (not c3edit--synced-changes-p)
-             (equal (current-buffer) c3edit--buffer))
+  (when-let (((not c3edit--synced-changes-p))
+             (document-id (cdr (assoc (current-buffer) c3edit--buffers))))
     (let (change)
       (if (= beg end)
           (setq change `((type . "delete")
@@ -168,6 +191,7 @@ BEG, END, and LEN are as documented in `after-change-functions'."
                        (index . ,(1- beg))
                        (text . ,(buffer-substring-no-properties beg end)))))
       (c3edit--send-message `((type . "change")
+                              (document_id . ,document-id)
                               (change . ,change))))))
 
 (provide 'c3edit)

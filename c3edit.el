@@ -70,7 +70,7 @@ Start as server if SERVER is non-nil."
     (user-error "Backend for c3edit is already running"))
   (let ((command (list c3edit-backend-path)))
     (when c3edit-port
-      (setq command (nconc command `("--port" ,c3edit-port))))
+      (setq command (nconc command `("--port" ,(number-to-string c3edit-port)))))
     (setq c3edit--process (make-process
                            :name "c3edit"
                            :command command

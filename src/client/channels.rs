@@ -6,7 +6,7 @@ pub enum MainTaskMessage {
     NewConnection((TcpStream, SocketAddr)),
     ClientMessage(ClientMessage),
     BackendMessage(BackendMessage),
-    UpdateCursors(String),
+    DocumentChanged(String),
 }
 
 pub enum OutgoingMessage {

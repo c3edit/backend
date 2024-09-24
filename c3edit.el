@@ -42,6 +42,13 @@
   "Port to listen for incoming connections on."
   :type 'natnum)
 
+(defconst c3edit-peer-faces
+  '(ansi-color-red
+    ansi-color-cyan
+    ansi-color-blue
+    ansi-color-green)
+  "List of faces to use for peer cursor/selection colors.")
+
 (defvar c3edit--process nil
   "Process for c3edit backend.")
 
@@ -137,6 +144,12 @@ Returns list of read objects."
         (json-end-of-file)))
     (nreverse data)))
 
+(defun c3edit--get-peer-face (document-id)
+  "Return a face for a new peer in DOCUMENT-ID."
+  (let* ((peers (length (cdr (assoc document-id c3edit--cursors-alist))))
+         (face (nth (mod peers (length c3edit-peer-faces)) c3edit-peer-faces)))
+    (face-foreground face)))
+
 (defun c3edit--handle-create-document-response (id)
   "Handle `create_document_response` message with data ID."
   (push `(,c3edit--currently-creating-buffer . ,id)
@@ -182,9 +195,10 @@ alist."
        ;; Our cursor
        ((not peer-id)
         (goto-char (1+ position)))
+       ;; Create new cursor for peer
        ((not overlay)
         (setq overlay (make-overlay (1+ position) (+ 2 position)))
-        (overlay-put overlay 'face 'cursor)
+        (overlay-put overlay 'face `(:background ,(c3edit--get-peer-face id)))
         (push `(,id . ,overlay) c3edit--cursors-alist))
        (t
         (move-overlay overlay (1+ position) (+ 2 position)))))))

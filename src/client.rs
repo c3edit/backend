@@ -112,7 +112,7 @@ impl Client {
     pub async fn begin_event_loop(mut self) {
         info!("Entering main event loop");
 
-        while let Ok(message) = self.main_channel_rx.try_recv() {
+        while let Some(message) = self.main_channel_rx.recv().await {
             match message {
                 MainTaskMessage::NewConnection(connection) => {
                     self.accept_new_connection(connection).await;
@@ -446,7 +446,10 @@ impl Client {
             } => {
                 info!("Received cursor update for document {}", document_id);
 
-                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+                let Some(doc_info) = self.active_documents.get_mut(&document_id) else {
+                    // Document not active.
+                    return;
+                };
                 doc_info.cursors.insert(peer_id, cursor);
             }
         }

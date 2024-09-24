@@ -2,7 +2,7 @@ mod channels;
 mod tasks;
 mod utils;
 
-use channels::{Channels, OutgoingMessage};
+use channels::{Channels, MainTaskMessage, OutgoingMessage};
 use loro::{cursor::Cursor, LoroDoc, SubID};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -12,7 +12,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
     },
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::Receiver,
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -100,11 +100,7 @@ pub struct Client {
     doc: LoroDoc,
     listener: TcpListener,
     channels: Channels,
-    // TODO Consolidate channels into a single event loop receiver.
-    stdin_rx: Receiver<ClientMessage>,
-    network_rx: Receiver<Vec<u8>>,
-    document_change_tx: Sender<String>,   // HACK
-    document_change_rx: Receiver<String>, // HACK
+    main_channel_rx: Receiver<MainTaskMessage>,
     active_documents: HashMap<String, DocumentInfo>,
 }
 
@@ -113,30 +109,31 @@ impl Client {
         info!("Entering main event loop");
 
         loop {
-            tokio::select! {
-                Ok(socket) = self.listener.accept() => {
-                    self.accept_new_connection(socket).await;
-                }
-
-                Some(message) = self.stdin_rx.recv() => {
-                    self.handle_stdin_message(message).await;
-                }
-
-                Some(data) = self.network_rx.recv() => {
-                    info!("Main task importing data");
-                    self.doc.import(&data).unwrap();
-                }
-
-                Some(id) = self.document_change_rx.recv() => {
-                    info!("Main task received document change notification");
-
-                    if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
-                        self.channels.stdout_tx.send(ClientMessage::NewCursorLocation {
-                            document_id: id,
-                            location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
-                        })
-                        .await
-                        .unwrap();
+            // TODO Move this to dedicated task.
+            while let Ok(message) = self.listener.accept().await {
+                self.accept_new_connection(message).await;
+            }
+            while let Ok(message) = self.main_channel_rx.try_recv() {
+                match message {
+                    MainTaskMessage::ClientMessage(c_message) => {
+                        self.handle_stdin_message(c_message).await;
+                    }
+                    MainTaskMessage::DocumentData(data) => {
+                        info!("Main task importing data");
+                        self.doc.import(&data).unwrap();
+                    }
+                    MainTaskMessage::UpdateCursor(id) => {
+                        info!("Updating cursor locations");
+                        if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
+                            self.channels
+                                .stdout_tx
+                                .send(ClientMessage::NewCursorLocation {
+                                    document_id: id,
+                                    location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
+                                })
+                                .await
+                                .unwrap();
+                        }
                     }
                 }
             }
@@ -147,26 +144,23 @@ impl Client {
         let listener = builder.listener;
 
         // Setup tasks
-        let (stdin_task_channel_tx, stdin_task_channel_rx) = tokio::sync::mpsc::channel(10);
+        let (main_task_channel_tx, main_task_channel_rx) = tokio::sync::mpsc::channel(10);
         let (stdout_task_channel_tx, stdout_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        let (incoming_task_from_channel_tx, incoming_task_from_channel_rx) =
-            tokio::sync::mpsc::channel(10);
         let (incoming_task_to_channel_tx, incoming_task_to_channel_rx) =
             tokio::sync::mpsc::channel(1);
         let (outgoing_task_channel_tx, outgoing_task_channel_rx) = tokio::sync::mpsc::channel(10);
-        let (document_change_tx, document_change_rx) = tokio::sync::mpsc::channel(10);
         info!("Channels created");
 
         let channels = Channels {
-            stdin_tx: stdin_task_channel_tx,
-            stdout_tx: stdout_task_channel_tx,
+            main_tx: main_task_channel_tx.clone(),
             incoming_to_tx: incoming_task_to_channel_tx,
             outgoing_tx: outgoing_task_channel_tx,
+            stdout_tx: stdout_task_channel_tx,
         };
 
-        begin_incoming_task(incoming_task_from_channel_tx, incoming_task_to_channel_rx);
+        begin_incoming_task(main_task_channel_tx, incoming_task_to_channel_rx);
         begin_outgoing_task(outgoing_task_channel_rx);
-        begin_stdin_task(channels.stdin_tx.clone());
+        begin_stdin_task(channels.main_tx.clone());
         begin_stdout_task(stdout_task_channel_rx);
         info!("Tasks started");
 
@@ -174,10 +168,7 @@ impl Client {
             doc: LoroDoc::new(),
             listener,
             channels,
-            stdin_rx: stdin_task_channel_rx,
-            network_rx: incoming_task_from_channel_rx,
-            document_change_tx,
-            document_change_rx,
+            main_channel_rx: main_task_channel_rx,
             active_documents: HashMap::new(),
         }
     }
@@ -186,7 +177,7 @@ impl Client {
         let c_id = self.doc.get_text(id).id();
         let id = id.to_owned();
         let channel = self.channels.stdout_tx.clone();
-        let notify_channel = self.document_change_tx.clone();
+        let notify_channel = self.channels.main_tx.clone();
         self.doc.subscribe(
             &c_id,
             Arc::new(move |change| {
@@ -212,7 +203,10 @@ impl Client {
                         stdout_task_channel_tx.send(message).await.unwrap();
                     }
 
-                    notify_channel.send(id.clone()).await.unwrap();
+                    notify_channel
+                        .send(MainTaskMessage::UpdateCursor(id))
+                        .await
+                        .unwrap();
                 });
             }),
         )

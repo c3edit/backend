@@ -1,5 +1,5 @@
 use super::{
-    channels::OutgoingMessage,
+    channels::{MainTaskMessage, OutgoingMessage},
     BackendMessage, ClientMessage, ReadSocket,
 };
 use futures::{SinkExt, TryStreamExt};
@@ -10,7 +10,7 @@ use tokio::{
 };
 use tracing::info;
 
-pub fn begin_incoming_task(tx: Sender<Vec<u8>>, mut rx: Receiver<ReadSocket>) {
+pub fn begin_incoming_task(tx: Sender<MainTaskMessage>, mut rx: Receiver<ReadSocket>) {
     tokio::spawn(async move {
         while let Some(mut socket) = rx.recv().await {
             let tx = tx.clone();
@@ -20,7 +20,7 @@ pub fn begin_incoming_task(tx: Sender<Vec<u8>>, mut rx: Receiver<ReadSocket>) {
                 while let Some(message) = socket.try_next().await.unwrap() {
                     info!("Received from network: {:?}", message);
                     let BackendMessage::DocumentSync { data } = message;
-                    tx.send(data).await.unwrap();
+                    tx.send(MainTaskMessage::DocumentData(data)).await.unwrap();
                 }
             });
         }
@@ -51,7 +51,7 @@ pub fn begin_outgoing_task(mut rx: Receiver<OutgoingMessage>) {
     });
 }
 
-pub fn begin_stdin_task(tx: Sender<ClientMessage>) {
+pub fn begin_stdin_task(tx: Sender<MainTaskMessage>) {
     tokio::spawn(async move {
         let stdin = BufReader::new(io::stdin());
         let mut lines = stdin.lines();
@@ -59,7 +59,9 @@ pub fn begin_stdin_task(tx: Sender<ClientMessage>) {
         while let Ok(Some(line)) = lines.next_line().await {
             info!("Received message from stdin: {}", line);
             let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
-            tx.send(message).await.unwrap();
+            tx.send(MainTaskMessage::ClientMessage(message))
+                .await
+                .unwrap();
         }
     });
 }

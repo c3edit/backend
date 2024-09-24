@@ -53,6 +53,9 @@
 (defvar c3edit--currently-creating-buffer nil
   "Buffer currently in the process of being created on the backend.")
 
+(defvar c3edit--pre-command-point nil
+  "Point before the last command was executed.")
+
 (defvar c3edit--synced-changes-p nil
   "Whether current changes being inserted are from backend.
 Dynamically-scoped variable to prevent infinitely-recursing changes.")
@@ -78,7 +81,8 @@ Start as server if SERVER is non-nil."
                            :filter #'c3edit--process-filter
                            :stderr (get-buffer-create "*c3edit log*"))))
   (add-hook 'after-change-functions #'c3edit--after-change-function)
-  (add-hook 'post-command-hook #'c3edit--post-command-function))
+  (add-hook 'post-command-hook #'c3edit--post-command-function)
+  (add-hook 'pre-command-hook #'c3edit--pre-command-function))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -89,7 +93,8 @@ Start as server if SERVER is non-nil."
   (setq c3edit--process nil
         c3edit--buffers nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function)
-  (remove-hook 'post-command-hook #'c3edit--post-command-function))
+  (remove-hook 'post-command-hook #'c3edit--post-command-function)
+  (remove-hook 'pre-command-hook #'c3edit--pre-command-function))
 
 (defun c3edit-add-peer (address)
   "Add a peer at ADDRESS."
@@ -205,12 +210,16 @@ BEG, END, and LEN are as documented in `after-change-functions'."
                               (document_id . ,document-id)
                               (change . ,change))))))
 
-;; TODO Only update cursor position if it has changed.
+(defun c3edit--pre-command-function ()
+  "Store pre-command cursor position."
+  (setq c3edit--pre-command-point (point)))
+
 ;; TODO Use local hooks instead of checking current buffer.
 (defun c3edit--post-command-function ()
   "Update c3edit backend with cursor position after command execution."
   (when-let ((c3edit--process)
-             (document-id (cdr (assoc (current-buffer) c3edit--buffers))))
+             (document-id (cdr (assoc (current-buffer) c3edit--buffers)))
+             ((not (= c3edit--pre-command-point (point)))))
     (c3edit--send-message `((type . "set_cursor")
                             (document_id . ,document-id)
                             (location . ,(1- (point)))))))

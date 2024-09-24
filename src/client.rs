@@ -124,10 +124,12 @@ impl Client {
                     self.handle_backend_message(data).await;
                 }
                 MainTaskMessage::UpdateCursors(id) => {
-                    info!("Updating cursor locations");
+                    info!("Updating cursor locations for document {}", id);
 
                     // TODO This is probably inefficient?
-                    if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
+                    let doc_info = self.active_documents.get(&id).unwrap();
+
+                    if let Some(ref cursor) = doc_info.cursor {
                         self.channels
                             .stdout_tx
                             .send(ClientMessage::SetCursor {
@@ -138,8 +140,7 @@ impl Client {
                             .await
                             .unwrap();
                     }
-                    for (peer_id, cursor) in self.active_documents.get(&id).unwrap().cursors.iter()
-                    {
+                    for (peer_id, cursor) in doc_info.cursors.iter() {
                         self.channels
                             .stdout_tx
                             .send(ClientMessage::SetCursor {
@@ -227,6 +228,25 @@ impl Client {
         )
     }
 
+    async fn broadcast_cursor_update(&self, document_id: &str) {
+        let doc_info = self.active_documents.get(document_id).unwrap();
+        let peer_id = self.doc.peer_id();
+        let Some(ref cursor) = doc_info.cursor else {
+            return;
+        };
+        self.channels
+            .outgoing_tx
+            .send(OutgoingMessage::BackendMessage(
+                BackendMessage::CursorUpdate {
+                    document_id: document_id.to_owned(),
+                    peer_id,
+                    cursor: cursor.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+    }
+
     async fn broadcast_all_data(&mut self) {
         self.channels
             .outgoing_tx
@@ -238,22 +258,8 @@ impl Client {
             .await
             .unwrap();
 
-        let peer_id = self.doc.peer_id();
-        for (id, info) in self.active_documents.iter() {
-            let Some(cursor) = info.cursor.clone() else {
-                continue;
-            };
-            self.channels
-                .outgoing_tx
-                .send(OutgoingMessage::BackendMessage(
-                    BackendMessage::CursorUpdate {
-                        document_id: id.clone(),
-                        peer_id,
-                        cursor,
-                    },
-                ))
-                .await
-                .unwrap();
+        for id in self.active_documents.keys() {
+            self.broadcast_cursor_update(id).await;
         }
     }
 
@@ -344,10 +350,16 @@ impl Client {
             } => {
                 match change {
                     Change::Insert { index, text } => {
-                        self.doc.get_text(document_id).insert(index, &text).unwrap();
+                        self.doc
+                            .get_text(document_id.as_str())
+                            .insert(index, &text)
+                            .unwrap();
                     }
                     Change::Delete { index, len } => {
-                        self.doc.get_text(document_id).delete(index, len).unwrap();
+                        self.doc
+                            .get_text(document_id.as_str())
+                            .delete(index, len)
+                            .unwrap();
                     }
                 }
 
@@ -428,7 +440,7 @@ impl Client {
                 let text = self.doc.get_text(document_id.as_str());
                 doc_info.cursor = text.get_cursor(location, Default::default());
 
-                // TODO Cursors for other users.
+                self.broadcast_cursor_update(&document_id).await;
             }
         }
     }
@@ -450,7 +462,21 @@ impl Client {
                     // Document not active.
                     return;
                 };
+
+                let pos = self.doc.get_cursor_pos(&cursor).unwrap().current.pos;
                 doc_info.cursors.insert(peer_id, cursor);
+
+                // TODO Extract this code and share it with the code in the
+                // event loop for updating the frontend.
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::SetCursor {
+                        document_id: document_id.clone(),
+                        peer_id: Some(peer_id),
+                        location: pos,
+                    })
+                    .await
+                    .unwrap();
             }
         }
     }

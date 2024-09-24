@@ -48,6 +48,11 @@
 (defvar c3edit--buffers nil
   "Alist mapping active buffers to their backend IDs.")
 
+(defvar c3edit--cursors-alist nil
+  "Alist mapping buffer IDs to their cursor overlays.
+The cdr of each element is an alist mapping peer IDs to their respective
+cursor overlay.")
+
 ;; TODO Replace this with a callback-based approach with a macro in which a
 ;; function can be registered to handle the next message.
 (defvar c3edit--currently-creating-buffer nil
@@ -91,7 +96,8 @@ Start as server if SERVER is non-nil."
     (user-error "Backend for c3edit is not running"))
   (kill-process c3edit--process)
   (setq c3edit--process nil
-        c3edit--buffers nil)
+        c3edit--buffers nil
+        c3edit--cursors-alist nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function)
   (remove-hook 'post-command-hook #'c3edit--post-command-function)
   (remove-hook 'pre-command-hook #'c3edit--pre-command-function))
@@ -135,6 +141,7 @@ Returns list of read objects."
   "Handle `create_document_response` message with data ID."
   (push `(,c3edit--currently-creating-buffer . ,id)
         c3edit--buffers)
+  (push `(,id . nil) c3edit--cursors-alist)
   (message "Document created with ID %s" id))
 
 (defun c3edit--handle-join-document-response (id content)
@@ -144,6 +151,7 @@ Returns list of read objects."
       (erase-buffer)
       (insert content))
     (push `(,buffer . ,id) c3edit--buffers)
+    (push `(,id . nil) c3edit--cursors-alist)
     (pop-to-buffer buffer)
     (message "Joined document with ID %s" id)))
 
@@ -163,10 +171,23 @@ alist."
             (1+ .index)
             (+ 1 .index .len))))))))
 
-(defun c3edit--handle-new-cursor-location (id position)
-  "Update cursor position in buffer for document ID to POSITION."
-  (with-current-buffer (car (rassoc id c3edit--buffers))
-    (goto-char (1+ position))))
+(defun c3edit--handle-new-cursor-location (id position &optional peer-id)
+  "Update cursor for PEER-ID in document ID to POSITION."
+  (let* ((data (rassoc id c3edit--buffers))
+         (buffer (car data))
+         (id (cdr data))
+         (overlay (cdr (assoc id c3edit--cursors-alist))))
+    (with-current-buffer buffer
+      (cond
+       ;; Our cursor
+       ((not peer-id)
+        (goto-char (1+ position)))
+       ((not overlay)
+        (setq overlay (make-overlay (1+ position) (+ 2 position)))
+        (overlay-put overlay 'face 'cursor)
+        (push `(,id . ,overlay) c3edit--cursors-alist))
+       (t
+        (move-overlay overlay (1+ position) (+ 2 position)))))))
 
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
@@ -188,7 +209,7 @@ Processes message from TEXT."
           ("join_document_response"
            (c3edit--handle-join-document-response .id .current_content))
           ("set_cursor"
-           (c3edit--handle-new-cursor-location .document_id .location))
+           (c3edit--handle-new-cursor-location .document_id .location .peer_id))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))

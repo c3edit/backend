@@ -98,7 +98,6 @@ impl ClientBuilder {
 
 pub struct Client {
     doc: LoroDoc,
-    listener: TcpListener,
     channels: Channels,
     main_channel_rx: Receiver<MainTaskMessage>,
     active_documents: HashMap<String, DocumentInfo>,
@@ -108,32 +107,29 @@ impl Client {
     pub async fn begin_event_loop(mut self) {
         info!("Entering main event loop");
 
-        loop {
-            // TODO Move this to dedicated task.
-            while let Ok(message) = self.listener.accept().await {
-                self.accept_new_connection(message).await;
-            }
-            while let Ok(message) = self.main_channel_rx.try_recv() {
-                match message {
-                    MainTaskMessage::ClientMessage(c_message) => {
-                        self.handle_stdin_message(c_message).await;
-                    }
-                    MainTaskMessage::DocumentData(data) => {
-                        info!("Main task importing data");
-                        self.doc.import(&data).unwrap();
-                    }
-                    MainTaskMessage::UpdateCursor(id) => {
-                        info!("Updating cursor locations");
-                        if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
-                            self.channels
-                                .stdout_tx
-                                .send(ClientMessage::NewCursorLocation {
-                                    document_id: id,
-                                    location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
-                                })
-                                .await
-                                .unwrap();
-                        }
+        while let Ok(message) = self.main_channel_rx.try_recv() {
+            match message {
+                MainTaskMessage::NewConnection(connection) => {
+                    self.accept_new_connection(connection).await;
+                }
+                MainTaskMessage::ClientMessage(c_message) => {
+                    self.handle_stdin_message(c_message).await;
+                }
+                MainTaskMessage::DocumentData(data) => {
+                    info!("Main task importing data");
+                    self.doc.import(&data).unwrap();
+                }
+                MainTaskMessage::UpdateCursor(id) => {
+                    info!("Updating cursor locations");
+                    if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
+                        self.channels
+                            .stdout_tx
+                            .send(ClientMessage::NewCursorLocation {
+                                document_id: id,
+                                location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
+                            })
+                            .await
+                            .unwrap();
                     }
                 }
             }
@@ -158,15 +154,15 @@ impl Client {
             stdout_tx: stdout_task_channel_tx,
         };
 
-        begin_incoming_task(main_task_channel_tx, incoming_task_to_channel_rx);
+        begin_incoming_task(main_task_channel_tx.clone(), incoming_task_to_channel_rx);
         begin_outgoing_task(outgoing_task_channel_rx);
         begin_stdin_task(channels.main_tx.clone());
         begin_stdout_task(stdout_task_channel_rx);
+        begin_listening_task(listener, main_task_channel_tx.clone());
         info!("Tasks started");
 
         Client {
             doc: LoroDoc::new(),
-            listener,
             channels,
             main_channel_rx: main_task_channel_rx,
             active_documents: HashMap::new(),

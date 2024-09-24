@@ -6,6 +6,7 @@ use futures::{SinkExt, TryStreamExt};
 use std::io::Write as _;
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
+    net::TcpListener,
     sync::mpsc::{Receiver, Sender},
 };
 use tracing::info;
@@ -75,6 +76,16 @@ pub fn begin_stdout_task(mut rx: Receiver<ClientMessage>) {
             let mut stdout = std::io::stdout();
             stdout.write_all(serialized.as_bytes()).unwrap();
             stdout.write_all(b"\n").unwrap();
+        }
+    });
+}
+
+pub fn begin_listening_task(listener: TcpListener, tx: Sender<MainTaskMessage>) {
+    tokio::spawn(async move {
+        while let Ok(message) = listener.accept().await {
+            tx.send(MainTaskMessage::NewConnection(message))
+                .await
+                .unwrap();
         }
     });
 }

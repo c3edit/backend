@@ -1,8 +1,9 @@
-use tokio::sync::mpsc::Sender;
-
+use std::net::SocketAddr;
+use tokio::{net::TcpStream, sync::mpsc::Sender};
 use super::{ClientMessage, ReadSocket, WriteSocket};
 
 pub enum MainTaskMessage {
+    NewConnection((TcpStream, SocketAddr)),
     ClientMessage(ClientMessage),
     DocumentData(Vec<u8>),
     UpdateCursor(String),

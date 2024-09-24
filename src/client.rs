@@ -63,10 +63,6 @@ enum ClientMessage {
         document_id: String,
         location: usize,
     },
-    NewCursorLocation {
-        document_id: String,
-        location: usize,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,7 +120,7 @@ impl Client {
                     if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
                         self.channels
                             .stdout_tx
-                            .send(ClientMessage::NewCursorLocation {
+                            .send(ClientMessage::SetCursor {
                                 document_id: id,
                                 location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
                             })
@@ -259,10 +255,9 @@ impl Client {
             // Messages that should only ever be sent to the self.
             ClientMessage::AddPeerResponse { .. }
             | ClientMessage::CreateDocumentResponse { .. }
-            | ClientMessage::JoinDocumentResponse { .. }
-            | ClientMessage::NewCursorLocation { .. } => {
+            | ClientMessage::JoinDocumentResponse { .. } => {
                 error!(
-                    "Received message which should only be sent to the self: {:?}",
+                    "Received message which should only be sent to the client: {:?}",
                     message
                 );
             }

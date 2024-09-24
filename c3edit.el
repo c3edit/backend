@@ -187,7 +187,7 @@ Processes message from TEXT."
            (c3edit--handle-create-document-response .id))
           ("join_document_response"
            (c3edit--handle-join-document-response .id .current_content))
-          ("new_cursor_location"
+          ("set_cursor"
            (c3edit--handle-new-cursor-location .document_id .location))
           (_
            (display-warning

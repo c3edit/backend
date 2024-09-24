@@ -1,6 +1,5 @@
 use super::{
-    channels::{MainTaskMessage, OutgoingMessage},
-    BackendMessage, ClientMessage, ReadSocket,
+    channels::{MainTaskMessage, OutgoingMessage}, ClientMessage, ReadSocket,
 };
 use futures::{SinkExt, TryStreamExt};
 use std::io::Write as _;
@@ -20,8 +19,9 @@ pub fn begin_incoming_task(tx: Sender<MainTaskMessage>, mut rx: Receiver<ReadSoc
             tokio::spawn(async move {
                 while let Some(message) = socket.try_next().await.unwrap() {
                     info!("Received from network: {:?}", message);
-                    let BackendMessage::DocumentSync { data } = message;
-                    tx.send(MainTaskMessage::DocumentData(data)).await.unwrap();
+                    tx.send(MainTaskMessage::BackendMessage(message))
+                        .await
+                        .unwrap();
                 }
             });
         }
@@ -38,8 +38,7 @@ pub fn begin_outgoing_task(mut rx: Receiver<OutgoingMessage>) {
                     OutgoingMessage::NewSocket(socket) => {
                         sockets.push(socket);
                     }
-                    OutgoingMessage::DocumentData(data) => {
-                        let message = BackendMessage::DocumentSync { data };
+                    OutgoingMessage::BackendMessage(message) => {
                         info!("Sending to network: {:?}", message);
 
                         for socket in sockets.iter_mut() {

@@ -1,16 +1,16 @@
+use super::{BackendMessage, ClientMessage, ReadSocket, WriteSocket};
 use std::net::SocketAddr;
 use tokio::{net::TcpStream, sync::mpsc::Sender};
-use super::{ClientMessage, ReadSocket, WriteSocket};
 
 pub enum MainTaskMessage {
     NewConnection((TcpStream, SocketAddr)),
     ClientMessage(ClientMessage),
-    DocumentData(Vec<u8>),
-    UpdateCursor(String),
+    BackendMessage(BackendMessage),
+    UpdateCursors(String),
 }
 
 pub enum OutgoingMessage {
-    DocumentData(Vec<u8>),
+    BackendMessage(BackendMessage),
     NewSocket(WriteSocket),
 }
 

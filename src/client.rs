@@ -3,7 +3,7 @@ mod tasks;
 mod utils;
 
 use channels::{Channels, MainTaskMessage, OutgoingMessage};
-use loro::{cursor::Cursor, LoroDoc, SubID};
+use loro::{cursor::Cursor, LoroDoc, PeerID, SubID};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tasks::*;
@@ -61,6 +61,8 @@ enum ClientMessage {
     },
     SetCursor {
         document_id: String,
+        // This field should be none for the client's cursor.
+        peer_id: Option<PeerID>,
         location: usize,
     },
 }
@@ -75,7 +77,14 @@ enum Change {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum BackendMessage {
-    DocumentSync { data: Vec<u8> },
+    DocumentSync {
+        data: Vec<u8>,
+    },
+    CursorUpdate {
+        document_id: String,
+        peer_id: PeerID,
+        cursor: Cursor,
+    },
 }
 
 pub struct ClientBuilder {
@@ -109,19 +118,33 @@ impl Client {
                     self.accept_new_connection(connection).await;
                 }
                 MainTaskMessage::ClientMessage(c_message) => {
-                    self.handle_stdin_message(c_message).await;
+                    self.handle_client_message(c_message).await;
                 }
-                MainTaskMessage::DocumentData(data) => {
-                    info!("Main task importing data");
-                    self.doc.import(&data).unwrap();
+                MainTaskMessage::BackendMessage(data) => {
+                    self.handle_backend_message(data).await;
                 }
-                MainTaskMessage::UpdateCursor(id) => {
+                MainTaskMessage::UpdateCursors(id) => {
                     info!("Updating cursor locations");
+
+                    // TODO This is probably inefficient?
                     if let Some(ref cursor) = self.active_documents.get(&id).unwrap().cursor {
                         self.channels
                             .stdout_tx
                             .send(ClientMessage::SetCursor {
-                                document_id: id,
+                                document_id: id.clone(),
+                                peer_id: Some(self.doc.peer_id()),
+                                location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    for (peer_id, cursor) in self.active_documents.get(&id).unwrap().cursors.iter()
+                    {
+                        self.channels
+                            .stdout_tx
+                            .send(ClientMessage::SetCursor {
+                                document_id: id.clone(),
+                                peer_id: Some(*peer_id),
                                 location: self.doc.get_cursor_pos(cursor).unwrap().current.pos,
                             })
                             .await
@@ -196,7 +219,7 @@ impl Client {
                     }
 
                     notify_channel
-                        .send(MainTaskMessage::UpdateCursor(id))
+                        .send(MainTaskMessage::UpdateCursors(id))
                         .await
                         .unwrap();
                 });
@@ -207,11 +230,31 @@ impl Client {
     async fn broadcast_all_data(&mut self) {
         self.channels
             .outgoing_tx
-            .send(OutgoingMessage::DocumentData(
-                self.doc.export_from(&Default::default()),
+            .send(OutgoingMessage::BackendMessage(
+                BackendMessage::DocumentSync {
+                    data: self.doc.export_from(&Default::default()),
+                },
             ))
             .await
             .unwrap();
+
+        let peer_id = self.doc.peer_id();
+        for (id, info) in self.active_documents.iter() {
+            let Some(cursor) = info.cursor.clone() else {
+                continue;
+            };
+            self.channels
+                .outgoing_tx
+                .send(OutgoingMessage::BackendMessage(
+                    BackendMessage::CursorUpdate {
+                        document_id: id.clone(),
+                        peer_id,
+                        cursor,
+                    },
+                ))
+                .await
+                .unwrap();
+        }
     }
 
     async fn accept_new_connection(&mut self, (socket, addr): (TcpStream, std::net::SocketAddr)) {
@@ -248,7 +291,7 @@ impl Client {
             .unwrap();
     }
 
-    async fn handle_stdin_message(&mut self, message: ClientMessage) {
+    async fn handle_client_message(&mut self, message: ClientMessage) {
         info!("Main task received from stdin: {:?}", message);
 
         match message {
@@ -308,13 +351,8 @@ impl Client {
                     }
                 }
 
-                self.channels
-                    .outgoing_tx
-                    .send(OutgoingMessage::DocumentData(
-                        self.doc.export_from(&Default::default()),
-                    ))
-                    .await
-                    .unwrap();
+                // TODO Only send deltas to other clients.
+                self.broadcast_all_data().await;
             }
             ClientMessage::CreateDocument {
                 name,
@@ -330,6 +368,7 @@ impl Client {
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
+                        cursors: HashMap::new(),
                     },
                 );
 
@@ -365,6 +404,7 @@ impl Client {
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
+                        cursors: HashMap::new(),
                     },
                 );
 
@@ -382,6 +422,7 @@ impl Client {
             ClientMessage::SetCursor {
                 document_id,
                 location,
+                ..
             } => {
                 let doc_info = self.active_documents.get_mut(&document_id).unwrap();
                 let text = self.doc.get_text(document_id.as_str());
@@ -391,9 +432,30 @@ impl Client {
             }
         }
     }
+
+    async fn handle_backend_message(&mut self, message: BackendMessage) {
+        match message {
+            BackendMessage::DocumentSync { data } => {
+                info!("Received document sync data");
+                self.doc.import(&data).unwrap();
+            }
+            BackendMessage::CursorUpdate {
+                document_id,
+                peer_id,
+                cursor,
+            } => {
+                info!("Received cursor update for document {}", document_id);
+
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+                doc_info.cursors.insert(peer_id, cursor);
+            }
+        }
+    }
 }
 
 struct DocumentInfo {
     sub_id: SubID,
+    // TODO Merge into one HashMap?
     cursor: Option<Cursor>,
+    cursors: HashMap<PeerID, Cursor>,
 }

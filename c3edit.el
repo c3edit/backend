@@ -148,7 +148,7 @@ Returns list of read objects."
   "Return a face for a new peer in DOCUMENT-ID."
   (let* ((peers (length (cdr (assoc document-id c3edit--cursors-alist))))
          (face (nth (mod peers (length c3edit-peer-faces)) c3edit-peer-faces)))
-    (face-foreground face)))
+    `(:inverse-video t :inherit ,face)))
 
 (defun c3edit--handle-create-document-response (id)
   "Handle `create_document_response` message with data ID."
@@ -198,7 +198,7 @@ alist."
        ;; Create new cursor for peer
        ((not overlay)
         (setq overlay (make-overlay (1+ position) (+ 2 position)))
-        (overlay-put overlay 'face `(:background ,(c3edit--get-peer-face id)))
+        (overlay-put overlay 'face (c3edit--get-peer-face id))
         (push `(,id . ,overlay) c3edit--cursors-alist))
        (t
         (move-overlay overlay (1+ position) (+ 2 position)))))))

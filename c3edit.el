@@ -29,6 +29,7 @@
 
 (require 'json)
 (require 'map)
+(require 'ansi-color)
 
 (defgroup c3edit nil
   "Real-time cross-editor collaborative editing."

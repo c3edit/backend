@@ -206,7 +206,6 @@ alist."
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
 Processes message from TEXT."
-  (message "Received data: %s" text)
   ;; Emacs process handling may return many lines at once, we have to make sure
   ;; to read them all in order.
   (let* ((data (c3edit--json-read-all text))

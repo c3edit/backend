@@ -67,6 +67,10 @@ enum ClientMessage {
         #[serde(default)]
         mark: bool,
     },
+    UnsetMark {
+        document_id: String,
+        peer_id: Option<PeerID>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +91,10 @@ enum BackendMessage {
         peer_id: PeerID,
         cursor: Cursor,
         mark: bool,
+    },
+    UnsetMark {
+        document_id: String,
+        peer_id: PeerID,
     },
 }
 
@@ -235,20 +243,25 @@ impl Client {
                 .unwrap();
         }
 
-        if let Some(ref mark) = doc_info.mark {
-            self.channels
-                .outgoing_tx
-                .send(OutgoingMessage::BackendMessage(
+        self.channels
+            .outgoing_tx
+            .send(OutgoingMessage::BackendMessage(
+                if let Some(ref mark) = doc_info.mark {
                     BackendMessage::CursorUpdate {
                         document_id: document_id.to_owned(),
                         peer_id,
                         cursor: mark.clone(),
                         mark: true,
-                    },
-                ))
-                .await
-                .unwrap();
-        }
+                    }
+                } else {
+                    BackendMessage::UnsetMark {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                    }
+                },
+            ))
+            .await
+            .unwrap();
     }
 
     async fn broadcast_all_data(&mut self) {
@@ -301,39 +314,72 @@ impl Client {
             .unwrap();
     }
 
+    // TODO Refactor
     async fn update_frontend_cursor(&self, document_id: &str, peer_id: Option<PeerID>, mark: bool) {
         let doc_info = self.active_documents.get(document_id).unwrap();
-        let Some(cursor) = peer_id
-            .and_then(|id| {
-                if mark {
-                    doc_info.marks.get(&id)
-                } else {
-                    doc_info.cursors.get(&id)
-                }
-            })
-            .or(doc_info.cursor.as_ref())
-        else {
-            return;
-        };
 
-        let pos = self.doc.get_cursor_pos(cursor).unwrap().current.pos;
-        self.channels
-            .stdout_tx
-            .send(ClientMessage::SetCursor {
-                document_id: document_id.to_owned(),
-                peer_id,
-                location: pos,
-                mark,
-            })
-            .await
-            .unwrap();
+        if mark {
+            let mark = if let Some(peer_id) = peer_id {
+                doc_info.marks.get(&peer_id)
+            } else {
+                doc_info.mark.as_ref()
+            };
+
+            if let Some(mark) = mark {
+                let pos = self.doc.get_cursor_pos(mark).unwrap().current.pos;
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::SetCursor {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                        location: pos,
+                        mark: true,
+                    })
+                    .await
+                    .unwrap();
+            } else {
+                self.channels
+                    .stdout_tx
+                    .send(ClientMessage::UnsetMark {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                    })
+                    .await
+                    .unwrap();
+            }
+        } else {
+            let Some(cursor) = peer_id
+                .and_then(|id| {
+                    if mark {
+                        doc_info.marks.get(&id)
+                    } else {
+                        doc_info.cursors.get(&id)
+                    }
+                })
+                .or(doc_info.cursor.as_ref())
+            else {
+                return;
+            };
+
+            let pos = self.doc.get_cursor_pos(cursor).unwrap().current.pos;
+            self.channels
+                .stdout_tx
+                .send(ClientMessage::SetCursor {
+                    document_id: document_id.to_owned(),
+                    peer_id,
+                    location: pos,
+                    mark,
+                })
+                .await
+                .unwrap();
+        }
     }
 
     async fn handle_client_message(&mut self, message: ClientMessage) {
         info!("Main task received from stdin: {:?}", message);
 
         match message {
-            // Messages that should only ever be sent to the self.
+            // Messages that should only ever be sent to the client.
             ClientMessage::AddPeerResponse { .. }
             | ClientMessage::CreateDocumentResponse { .. }
             | ClientMessage::JoinDocumentResponse { .. } => {
@@ -485,6 +531,20 @@ impl Client {
 
                 self.broadcast_cursor_update(&document_id).await;
             }
+            ClientMessage::UnsetMark {
+                document_id,
+                peer_id,
+            } => {
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+
+                if let Some(peer_id) = peer_id {
+                    doc_info.marks.remove(&peer_id);
+                } else {
+                    doc_info.mark = None;
+                }
+
+                self.broadcast_cursor_update(&document_id).await;
+            }
         }
     }
 
@@ -518,6 +578,25 @@ impl Client {
                 }
 
                 self.update_frontend_cursor(&document_id, Some(peer_id), mark)
+                    .await;
+            }
+            BackendMessage::UnsetMark {
+                document_id,
+                peer_id,
+            } => {
+                info!(
+                    "Received unset mark for document {} from peer {}",
+                    document_id, peer_id
+                );
+
+                let Some(doc_info) = self.active_documents.get_mut(&document_id) else {
+                    // Document not active.
+                    return;
+                };
+
+                doc_info.marks.remove(&peer_id);
+
+                self.update_frontend_cursor(&document_id, Some(peer_id), true)
                     .await;
             }
         }

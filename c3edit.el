@@ -259,6 +259,15 @@ BEG, END, and LEN are as documented in `after-change-functions'."
                             (document_id . ,document-id)
                             (location . ,(1- (point)))))))
 
+(defun c3edit--activate-mark-function ()
+  "Update c3edit backend with mark position."
+  (when-let ((c3edit--process)
+             (document-id (cdr (assoc (current-buffer) c3edit--buffers))))
+    (c3edit--send-message `((type . "set_cursor")
+                            (document_id . ,document-id)
+                            (location . ,(1- (mark)))
+                            (mark . t)))))
+
 (provide 'c3edit)
 
 ;;; c3edit.el ends here

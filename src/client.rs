@@ -133,7 +133,11 @@ impl Client {
 
                     self.broadcast_cursor_update(&id).await;
                     for peer_id in doc_info.cursors.keys() {
-                        self.update_frontend_cursor(&id, Some(*peer_id)).await;
+                        self.update_frontend_cursor(&id, Some(*peer_id), false)
+                            .await;
+                    }
+                    for peer_id in doc_info.marks.keys() {
+                        self.update_frontend_cursor(&id, Some(*peer_id), true).await;
                     }
                 }
             }
@@ -215,21 +219,36 @@ impl Client {
     async fn broadcast_cursor_update(&self, document_id: &str) {
         let doc_info = self.active_documents.get(document_id).unwrap();
         let peer_id = self.doc.peer_id();
-        let Some(ref cursor) = doc_info.cursor else {
-            return;
-        };
-        self.channels
-            .outgoing_tx
-            .send(OutgoingMessage::BackendMessage(
-                BackendMessage::CursorUpdate {
-                    document_id: document_id.to_owned(),
-                    peer_id,
-                    cursor: cursor.clone(),
-                    mark: false,
-                },
-            ))
-            .await
-            .unwrap();
+
+        if let Some(ref cursor) = doc_info.cursor {
+            self.channels
+                .outgoing_tx
+                .send(OutgoingMessage::BackendMessage(
+                    BackendMessage::CursorUpdate {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                        cursor: cursor.clone(),
+                        mark: false,
+                    },
+                ))
+                .await
+                .unwrap();
+        }
+
+        if let Some(ref mark) = doc_info.mark {
+            self.channels
+                .outgoing_tx
+                .send(OutgoingMessage::BackendMessage(
+                    BackendMessage::CursorUpdate {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                        cursor: mark.clone(),
+                        mark: true,
+                    },
+                ))
+                .await
+                .unwrap();
+        }
     }
 
     async fn broadcast_all_data(&mut self) {
@@ -282,10 +301,16 @@ impl Client {
             .unwrap();
     }
 
-    async fn update_frontend_cursor(&self, document_id: &str, peer_id: Option<PeerID>) {
+    async fn update_frontend_cursor(&self, document_id: &str, peer_id: Option<PeerID>, mark: bool) {
         let doc_info = self.active_documents.get(document_id).unwrap();
         let Some(cursor) = peer_id
-            .and_then(|id| doc_info.cursors.get(&id))
+            .and_then(|id| {
+                if mark {
+                    doc_info.marks.get(&id)
+                } else {
+                    doc_info.cursors.get(&id)
+                }
+            })
             .or(doc_info.cursor.as_ref())
         else {
             return;
@@ -298,7 +323,7 @@ impl Client {
                 document_id: document_id.to_owned(),
                 peer_id,
                 location: pos,
-                mark: false,
+                mark,
             })
             .await
             .unwrap();
@@ -384,10 +409,13 @@ impl Client {
                 let subscription = self.add_doc_change_subscription(&id);
                 self.active_documents.insert(
                     id.clone(),
+                    // TODO Use Default trait
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
+                        mark: None,
                         cursors: HashMap::new(),
+                        marks: HashMap::new(),
                     },
                 );
 
@@ -423,7 +451,9 @@ impl Client {
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
+                        mark: None,
                         cursors: HashMap::new(),
+                        marks: HashMap::new(),
                     },
                 );
 
@@ -441,11 +471,17 @@ impl Client {
             ClientMessage::SetCursor {
                 document_id,
                 location,
+                mark,
                 ..
             } => {
                 let doc_info = self.active_documents.get_mut(&document_id).unwrap();
                 let text = self.doc.get_text(document_id.as_str());
-                doc_info.cursor = text.get_cursor(location, Default::default());
+
+                if mark {
+                    doc_info.mark = text.get_cursor(location, Default::default());
+                } else {
+                    doc_info.cursor = text.get_cursor(location, Default::default());
+                }
 
                 self.broadcast_cursor_update(&document_id).await;
             }
@@ -462,18 +498,26 @@ impl Client {
                 document_id,
                 peer_id,
                 cursor,
+                mark,
                 ..
             } => {
-                info!("Received cursor update for document {}", document_id);
+                info!(
+                    "Received cursor update for document {}; mark: {}",
+                    document_id, mark
+                );
 
                 let Some(doc_info) = self.active_documents.get_mut(&document_id) else {
                     // Document not active.
                     return;
                 };
 
-                doc_info.cursors.insert(peer_id, cursor);
+                if mark {
+                    doc_info.marks.insert(peer_id, cursor);
+                } else {
+                    doc_info.cursors.insert(peer_id, cursor);
+                }
 
-                self.update_frontend_cursor(&document_id, Some(peer_id))
+                self.update_frontend_cursor(&document_id, Some(peer_id), mark)
                     .await;
             }
         }
@@ -482,7 +526,9 @@ impl Client {
 
 struct DocumentInfo {
     sub_id: SubID,
-    // TODO Merge into one HashMap?
+    // TODO Merge into HashMaps?
     cursor: Option<Cursor>,
+    mark: Option<Cursor>,
     cursors: HashMap<PeerID, Cursor>,
+    marks: HashMap<PeerID, Cursor>,
 }

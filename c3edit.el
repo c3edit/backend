@@ -96,7 +96,8 @@ Start as server if SERVER is non-nil."
   (add-hook 'after-change-functions #'c3edit--after-change-function)
   (add-hook 'post-command-hook #'c3edit--post-command-function)
   (add-hook 'pre-command-hook #'c3edit--pre-command-function)
-  (add-hook 'activate-mark-hook #'c3edit--activate-mark-function))
+  (add-hook 'activate-mark-hook #'c3edit--activate-mark-function)
+  (add-hook 'deactivate-mark-hook #'c3edit--deactivate-mark-function))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -211,6 +212,15 @@ alist."
        (t
         (move-overlay overlay (overlay-get overlay 'point) position))))))
 
+(defun c3edit--handle-unset-mark (id peer-id)
+  "Remove mark selection for PEER-ID in document ID."
+  (let* ((data (rassoc id c3edit--buffers))
+         (buffer (car data))
+         (overlay (cdr (assoc id c3edit--cursors-alist)))
+         (point (overlay-get overlay 'point)))
+    (with-current-buffer buffer
+      (move-overlay overlay point (1+ point)))))
+
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.
 Processes message from TEXT."
@@ -231,6 +241,8 @@ Processes message from TEXT."
            (c3edit--handle-join-document-response .id .current_content))
           ("set_cursor"
            (c3edit--handle-new-cursor-location .document_id .location .mark .peer_id))
+          ("unset_mark"
+           (c3edit--handle-unset-mark .document_id .peer_id))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))
@@ -274,6 +286,13 @@ BEG, END, and LEN are as documented in `after-change-functions'."
                             (document_id . ,document-id)
                             (location . ,(1- (mark)))
                             (mark . t)))))
+
+(defun c3edit--deactivate-mark-function ()
+  "Update c3edit backend with mark deactivation."
+  (when-let ((c3edit--process)
+             (document-id (cdr (assoc (current-buffer) c3edit--buffers))))
+    (c3edit--send-message `((type . "unset_mark")
+                            (document_id . ,document-id)))))
 
 (provide 'c3edit)
 

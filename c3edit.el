@@ -95,7 +95,8 @@ Start as server if SERVER is non-nil."
                            :stderr (get-buffer-create "*c3edit log*"))))
   (add-hook 'after-change-functions #'c3edit--after-change-function)
   (add-hook 'post-command-hook #'c3edit--post-command-function)
-  (add-hook 'pre-command-hook #'c3edit--pre-command-function))
+  (add-hook 'pre-command-hook #'c3edit--pre-command-function)
+  (add-hook 'activate-mark-hook #'c3edit--activate-mark-function))
 
 (defun c3edit-stop ()
   "Kill c3edit backend."
@@ -108,7 +109,8 @@ Start as server if SERVER is non-nil."
         c3edit--cursors-alist nil)
   (remove-hook 'after-change-functions #'c3edit--after-change-function)
   (remove-hook 'post-command-hook #'c3edit--post-command-function)
-  (remove-hook 'pre-command-hook #'c3edit--pre-command-function))
+  (remove-hook 'pre-command-hook #'c3edit--pre-command-function)
+  (remove-hook 'activate-mark-hook #'c3edit--activate-mark-function))
 
 (defun c3edit-add-peer (address)
   "Add a peer at ADDRESS."
@@ -185,17 +187,18 @@ alist."
             (1+ .index)
             (+ 1 .index .len))))))))
 
-(defun c3edit--handle-new-cursor-location (id position &optional peer-id)
-  "Update cursor for PEER-ID in document ID to POSITION."
+(defun c3edit--handle-new-cursor-location (id position mark &optional peer-id)
+  "Update cursor (mark if MARK) for PEER-ID in document ID to POSITION."
   (let* ((data (rassoc id c3edit--buffers))
          (buffer (car data))
          (id (cdr data))
-         (overlay (cdr (assoc id c3edit--cursors-alist))))
+         (overlay (cdr (assoc id c3edit--cursors-alist)))
+         (fn (if mark #'set-mark #'goto-char)))
     (with-current-buffer buffer
       (cond
        ;; Our cursor
        ((not peer-id)
-        (goto-char (1+ position)))
+        (funcall fn (1+ position)))
        ;; Create new cursor for peer
        ((not overlay)
         (setq overlay (make-overlay (1+ position) (+ 2 position)))
@@ -223,7 +226,7 @@ Processes message from TEXT."
           ("join_document_response"
            (c3edit--handle-join-document-response .id .current_content))
           ("set_cursor"
-           (c3edit--handle-new-cursor-location .document_id .location .peer_id))
+           (c3edit--handle-new-cursor-location .document_id .location .mark .peer_id))
           (_
            (display-warning
             'c3edit (format "Unknown message type: %s" .type) :warning)))))))

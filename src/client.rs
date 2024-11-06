@@ -64,6 +64,8 @@ enum ClientMessage {
         // This field should be none for the client's cursor.
         peer_id: Option<PeerID>,
         location: usize,
+        #[serde(default)]
+        mark: bool,
     },
 }
 
@@ -84,6 +86,7 @@ enum BackendMessage {
         document_id: String,
         peer_id: PeerID,
         cursor: Cursor,
+        mark: bool,
     },
 }
 
@@ -222,6 +225,7 @@ impl Client {
                     document_id: document_id.to_owned(),
                     peer_id,
                     cursor: cursor.clone(),
+                    mark: false,
                 },
             ))
             .await
@@ -294,6 +298,7 @@ impl Client {
                 document_id: document_id.to_owned(),
                 peer_id,
                 location: pos,
+                mark: false,
             })
             .await
             .unwrap();
@@ -457,6 +462,7 @@ impl Client {
                 document_id,
                 peer_id,
                 cursor,
+                ..
             } => {
                 info!("Received cursor update for document {}", document_id);
 

@@ -187,7 +187,7 @@ alist."
             (1+ .index)
             (+ 1 .index .len))))))))
 
-(defun c3edit--handle-new-cursor-location (id position mark &optional peer-id)
+(defun c3edit--handle-new-cursor-location (id position mark peer-id)
   "Update cursor (mark if MARK) for PEER-ID in document ID to POSITION."
   (let* ((data (rassoc id c3edit--buffers))
          (buffer (car data))
@@ -203,9 +203,13 @@ alist."
        ((not overlay)
         (setq overlay (make-overlay (1+ position) (+ 2 position)))
         (overlay-put overlay 'face (c3edit--get-peer-face id))
+        (overlay-put overlay 'point (1+ position))
         (push `(,id . ,overlay) c3edit--cursors-alist))
+       ((eq mark :json-false)
+        (move-overlay overlay (1+ position) (+ 2 position))
+        (overlay-put overlay 'point (1+ position)))
        (t
-        (move-overlay overlay (1+ position) (+ 2 position)))))))
+        (move-overlay overlay (overlay-get overlay 'point) position))))))
 
 (defun c3edit--process-filter (_process text)
   "Process filter for c3edit backend messages.

@@ -292,7 +292,41 @@ impl Client {
     }
 
     async fn update_frontend_selection(&self, document_id: &str, peer_id: Option<loro::PeerID>) {
-        todo!()
+        let doc_info = self.active_documents.get(document_id).unwrap();
+
+        let selection = if let Some(peer_id) = peer_id {
+            doc_info.selections.get(&peer_id)
+        } else {
+            doc_info.selection.as_ref()
+        };
+
+        self.channels
+            .stdout_tx
+            .send(if let Some(selection) = selection {
+                ClientMessage::SetSelection {
+                    document_id: document_id.to_owned(),
+                    peer_id,
+                    point: self
+                        .doc
+                        .get_cursor_pos(&selection.point)
+                        .unwrap()
+                        .current
+                        .pos,
+                    mark: self
+                        .doc
+                        .get_cursor_pos(&selection.mark)
+                        .unwrap()
+                        .current
+                        .pos,
+                }
+            } else {
+                ClientMessage::UnsetSelection {
+                    document_id: document_id.to_owned(),
+                    peer_id,
+                }
+            })
+            .await
+            .unwrap();
     }
 
     async fn handle_client_message(&mut self, message: ClientMessage) {

@@ -300,10 +300,10 @@ impl Client {
             doc_info.selection.as_ref()
         };
 
-        self.channels
-            .stdout_tx
-            .send(if let Some(selection) = selection {
-                ClientMessage::SetSelection {
+        if let Some(selection) = selection {
+            self.channels
+                .stdout_tx
+                .send(ClientMessage::SetSelection {
                     document_id: document_id.to_owned(),
                     peer_id,
                     point: self
@@ -318,15 +318,11 @@ impl Client {
                         .unwrap()
                         .current
                         .pos,
-                }
-            } else {
-                ClientMessage::UnsetSelection {
-                    document_id: document_id.to_owned(),
-                    peer_id,
-                }
-            })
-            .await
-            .unwrap();
+                })
+                .await;
+        } else {
+            self.update_frontend_cursor(document_id, peer_id).await;
+        }
     }
 
     async fn handle_client_message(&mut self, message: ClientMessage) {
@@ -502,22 +498,6 @@ impl Client {
                 };
 
                 doc_info.selection = Some(selection);
-
-                self.broadcast_selection_update(&document_id).await;
-            }
-            ClientMessage::UnsetSelection {
-                document_id,
-                peer_id,
-            } => {
-                if peer_id.is_some() {
-                    error!(
-                        "Peer ID value was set on `unset_selection` message from frontend; ignoring"
-                    );
-                }
-
-                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
-
-                doc_info.selection = None;
 
                 self.broadcast_selection_update(&document_id).await;
             }

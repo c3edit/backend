@@ -58,10 +58,6 @@ pub(crate) enum ClientMessage {
         point: usize,
         mark: usize,
     },
-UnsetSelection {
-        document_id: String,
-        peer_id: Option<loro::PeerID>,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

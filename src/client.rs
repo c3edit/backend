@@ -160,6 +160,10 @@ impl Client {
         }
     }
 
+    async fn broadcast_selection_update(&self, document_id: &str) {
+        todo!()
+    }
+
     async fn broadcast_all_data(&mut self) {
         self.channels
             .outgoing_tx
@@ -426,7 +430,22 @@ impl Client {
                 point,
                 mark,
             } => {
-                todo!()
+                if peer_id.is_some() {
+                    error!(
+                        "Peer ID value was set on `set_selection` message from frontend; ignoring"
+                    );
+                }
+
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+                let text = self.doc.get_text(document_id.as_str());
+                let selection = Selection {
+                    point: text.get_cursor(point, Default::default()).unwrap(),
+                    mark: text.get_cursor(mark, Default::default()).unwrap(),
+                };
+
+                doc_info.selection = Some(selection);
+
+                self.broadcast_selection_update(&document_id).await;
             }
             ClientMessage::UnsetMark {
                 document_id,
@@ -446,7 +465,17 @@ impl Client {
                 document_id,
                 peer_id,
             } => {
-                todo!()
+                if peer_id.is_some() {
+                    error!(
+                        "Peer ID value was set on `unset_selection` message from frontend; ignoring"
+                    );
+                }
+
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+
+                doc_info.selection = None;
+
+                self.broadcast_selection_update(&document_id).await;
             }
         }
     }

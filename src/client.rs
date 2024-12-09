@@ -351,9 +351,9 @@ impl Client {
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
-                        mark: None,
+                        selection: None,
                         cursors: HashMap::new(),
-                        marks: HashMap::new(),
+                        selections: HashMap::new(),
                     },
                 );
 
@@ -389,9 +389,9 @@ impl Client {
                     DocumentInfo {
                         sub_id: subscription,
                         cursor: None,
-                        mark: None,
+                        selection: None,
                         cursors: HashMap::new(),
-                        marks: HashMap::new(),
+                        selections: HashMap::new(),
                     },
                 );
 
@@ -435,9 +435,9 @@ impl Client {
                 let doc_info = self.active_documents.get_mut(&document_id).unwrap();
 
                 if let Some(peer_id) = peer_id {
-                    doc_info.marks.remove(&peer_id);
+                    doc_info.selections.remove(&peer_id);
                 } else {
-                    doc_info.mark = None;
+                    doc_info.selection = None;
                 }
 
                 self.broadcast_cursor_update(&document_id).await;
@@ -480,8 +480,7 @@ impl Client {
             BackendMessage::SelectionUpdate {
                 document_id,
                 peer_id,
-                point,
-                mark,
+                selection,
             } => {
                 todo!()
             }
@@ -499,7 +498,7 @@ impl Client {
                     return;
                 };
 
-                doc_info.marks.remove(&peer_id);
+                doc_info.selections.remove(&peer_id);
 
                 // self.update_frontend_cursor(&document_id, Some(peer_id), true)
                 //     .await;

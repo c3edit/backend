@@ -89,8 +89,7 @@ pub(crate) enum BackendMessage {
     SelectionUpdate {
         document_id: String,
         peer_id: loro::PeerID,
-        point: loro::cursor::Cursor,
-        mark: loro::cursor::Cursor,
+        selection: Selection,
     },
     UnsetMark {
         document_id: String,
@@ -106,7 +105,13 @@ pub(crate) struct DocumentInfo {
     pub sub_id: loro::SubID,
     // TODO Merge into HashMaps?
     pub cursor: Option<loro::cursor::Cursor>,
-    pub mark: Option<loro::cursor::Cursor>,
+    pub selection: Option<Selection>,
     pub cursors: HashMap<loro::PeerID, loro::cursor::Cursor>,
-    pub marks: HashMap<loro::PeerID, loro::cursor::Cursor>,
+    pub selections: HashMap<loro::PeerID, Selection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Selection {
+    pub point: loro::cursor::Cursor,
+    pub mark: loro::cursor::Cursor,
 }

@@ -291,6 +291,10 @@ impl Client {
         // }
     }
 
+    async fn update_frontend_selection(&self, document_id: &str, peer_id: Option<loro::PeerID>) {
+        todo!()
+    }
+
     async fn handle_client_message(&mut self, message: ClientMessage) {
         info!("Main task received from stdin: {:?}", message);
 
@@ -531,7 +535,12 @@ impl Client {
                 peer_id,
                 selection,
             } => {
-                todo!()
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+
+                doc_info.selections.insert(peer_id, selection);
+
+                self.update_frontend_selection(&document_id, Some(peer_id))
+                    .await;
             }
             BackendMessage::UnsetMark {
                 document_id,
@@ -556,7 +565,12 @@ impl Client {
                 document_id,
                 peer_id,
             } => {
-                todo!()
+                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
+
+                doc_info.selections.remove(&peer_id);
+
+                self.update_frontend_selection(&document_id, Some(peer_id))
+                    .await;
             }
         }
     }

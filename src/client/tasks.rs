@@ -1,5 +1,6 @@
 use super::{
-    channels::{MainTaskMessage, OutgoingMessage}, ClientMessage, ReadSocket,
+    channels::{MainTaskMessage, OutgoingMessage},
+    ClientMessage, ReadSocket,
 };
 use futures::{SinkExt, TryStreamExt};
 use std::io::Write as _;

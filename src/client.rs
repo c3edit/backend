@@ -1,102 +1,20 @@
 mod channels;
 mod tasks;
+mod types;
 mod utils;
 
 use channels::{Channels, MainTaskMessage, OutgoingMessage};
-use loro::{cursor::Cursor, LoroDoc, PeerID, SubID};
-use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tasks::*;
 use tokio::{
-    net::{
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
-        TcpListener, TcpStream,
-    },
+    net::{TcpListener, TcpStream},
     sync::mpsc::Receiver,
 };
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{error, info};
+use types::*;
 use utils::*;
-
-// I hate Rust sometimes.
-type WriteSocket = tokio_serde::SymmetricallyFramed<
-    FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
-    BackendMessage,
-    SymmetricalJson<BackendMessage>,
->;
-type ReadSocket = tokio_serde::SymmetricallyFramed<
-    FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-    BackendMessage,
-    SymmetricalJson<BackendMessage>,
->;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
-#[serde(tag = "type")]
-enum ClientMessage {
-    AddPeer {
-        address: String,
-    },
-    AddPeerResponse {
-        address: String,
-    },
-    CreateDocument {
-        name: String,
-        initial_content: String,
-    },
-    CreateDocumentResponse {
-        id: String,
-    },
-    Change {
-        document_id: String,
-        change: Change,
-    },
-    JoinDocument {
-        id: String,
-    },
-    JoinDocumentResponse {
-        id: String,
-        current_content: String,
-    },
-    SetCursor {
-        document_id: String,
-        // This field should be none for the client's cursor.
-        peer_id: Option<PeerID>,
-        location: usize,
-        #[serde(default)]
-        mark: bool,
-    },
-    UnsetMark {
-        document_id: String,
-        peer_id: Option<PeerID>,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all(serialize = "snake_case", deserialize = "snake_case"))]
-#[serde(tag = "type")]
-enum Change {
-    Insert { index: usize, text: String },
-    Delete { index: usize, len: usize },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum BackendMessage {
-    DocumentSync {
-        data: Vec<u8>,
-    },
-    CursorUpdate {
-        document_id: String,
-        peer_id: PeerID,
-        cursor: Cursor,
-        mark: bool,
-    },
-    UnsetMark {
-        document_id: String,
-        peer_id: PeerID,
-    },
-}
 
 pub struct ClientBuilder {
     listener: TcpListener,
@@ -113,7 +31,7 @@ impl ClientBuilder {
 }
 
 pub struct Client {
-    doc: LoroDoc,
+    doc: loro::LoroDoc,
     channels: Channels,
     main_channel_rx: Receiver<MainTaskMessage>,
     active_documents: HashMap<String, DocumentInfo>,
@@ -178,14 +96,14 @@ impl Client {
         info!("Tasks started");
 
         Client {
-            doc: LoroDoc::new(),
+            doc: loro::LoroDoc::new(),
             channels,
             main_channel_rx: main_task_channel_rx,
             active_documents: HashMap::new(),
         }
     }
 
-    fn add_doc_change_subscription(&mut self, id: &str) -> SubID {
+    fn add_doc_change_subscription(&mut self, id: &str) -> loro::SubID {
         let c_id = self.doc.get_text(id).id();
         let id = id.to_owned();
         let channel = self.channels.stdout_tx.clone();
@@ -315,7 +233,12 @@ impl Client {
     }
 
     // TODO Refactor
-    async fn update_frontend_cursor(&self, document_id: &str, peer_id: Option<PeerID>, mark: bool) {
+    async fn update_frontend_cursor(
+        &self,
+        document_id: &str,
+        peer_id: Option<loro::PeerID>,
+        mark: bool,
+    ) {
         let doc_info = self.active_documents.get(document_id).unwrap();
 
         if mark {
@@ -601,13 +524,4 @@ impl Client {
             }
         }
     }
-}
-
-struct DocumentInfo {
-    sub_id: SubID,
-    // TODO Merge into HashMaps?
-    cursor: Option<Cursor>,
-    mark: Option<Cursor>,
-    cursors: HashMap<PeerID, Cursor>,
-    marks: HashMap<PeerID, Cursor>,
 }

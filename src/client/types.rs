@@ -58,11 +58,7 @@ pub(crate) enum ClientMessage {
         point: usize,
         mark: usize,
     },
-    UnsetMark {
-        document_id: String,
-        peer_id: Option<loro::PeerID>,
-    },
-    UnsetSelection {
+UnsetSelection {
         document_id: String,
         peer_id: Option<loro::PeerID>,
     },
@@ -90,10 +86,6 @@ pub(crate) enum BackendMessage {
         document_id: String,
         peer_id: loro::PeerID,
         selection: Selection,
-    },
-    UnsetMark {
-        document_id: String,
-        peer_id: loro::PeerID,
     },
     UnsetSelection {
         document_id: String,

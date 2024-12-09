@@ -505,20 +505,6 @@ impl Client {
 
                 self.broadcast_selection_update(&document_id).await;
             }
-            ClientMessage::UnsetMark {
-                document_id,
-                peer_id,
-            } => {
-                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
-
-                if let Some(peer_id) = peer_id {
-                    doc_info.selections.remove(&peer_id);
-                } else {
-                    doc_info.selection = None;
-                }
-
-                self.broadcast_cursor_update(&document_id).await;
-            }
             ClientMessage::UnsetSelection {
                 document_id,
                 peer_id,
@@ -575,25 +561,6 @@ impl Client {
 
                 self.update_frontend_selection(&document_id, Some(peer_id))
                     .await;
-            }
-            BackendMessage::UnsetMark {
-                document_id,
-                peer_id,
-            } => {
-                info!(
-                    "Received unset mark for document {} from peer {}",
-                    document_id, peer_id
-                );
-
-                let Some(doc_info) = self.active_documents.get_mut(&document_id) else {
-                    // Document not active.
-                    return;
-                };
-
-                doc_info.selections.remove(&peer_id);
-
-                // self.update_frontend_cursor(&document_id, Some(peer_id), true)
-                //     .await;
             }
             BackendMessage::UnsetSelection {
                 document_id,

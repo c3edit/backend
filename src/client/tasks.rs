@@ -9,7 +9,7 @@ use tokio::{
     net::TcpListener,
     sync::mpsc::{Receiver, Sender},
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub fn begin_incoming_task(tx: Sender<MainTaskMessage>, mut rx: Receiver<ReadSocket>) {
     tokio::spawn(async move {
@@ -59,7 +59,10 @@ pub fn begin_stdin_task(tx: Sender<MainTaskMessage>) {
 
         while let Ok(Some(line)) = lines.next_line().await {
             info!("Received message from stdin: {}", line);
-            let message = serde_json::from_str::<ClientMessage>(&line).unwrap();
+            let Ok(message) = serde_json::from_str::<ClientMessage>(&line) else {
+                error!("Failed to parse message from stdin: {}", line);
+                continue;
+            };
             tx.send(MainTaskMessage::ClientMessage(message))
                 .await
                 .unwrap();

@@ -83,10 +83,6 @@ pub(crate) enum BackendMessage {
         peer_id: loro::PeerID,
         selection: Selection,
     },
-    UnsetSelection {
-        document_id: String,
-        peer_id: loro::PeerID,
-    },
 }
 
 pub(crate) struct DocumentInfo {

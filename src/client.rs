@@ -164,24 +164,22 @@ impl Client {
         let doc_info = self.active_documents.get(document_id).unwrap();
         let peer_id = self.doc.peer_id();
 
-        self.channels
-            .outgoing_tx
-            .send(OutgoingMessage::BackendMessage(
-                if let Some(ref selection) = doc_info.selection {
+        if let Some(ref selection) = doc_info.selection {
+            self.channels
+                .outgoing_tx
+                .send(OutgoingMessage::BackendMessage(
                     BackendMessage::SelectionUpdate {
                         document_id: document_id.to_owned(),
                         peer_id,
                         selection: selection.clone(),
-                    }
-                } else {
-                    BackendMessage::UnsetSelection {
-                        document_id: document_id.to_owned(),
-                        peer_id,
-                    }
-                },
-            ))
-            .await
-            .unwrap();
+                    },
+                ))
+                .await
+                .unwrap();
+        } else {
+            // Cancel selection by sending cursor update.
+            self.broadcast_cursor_update(document_id).await;
+        }
     }
 
     async fn broadcast_all_data(&mut self) {
@@ -319,7 +317,8 @@ impl Client {
                         .current
                         .pos,
                 })
-                .await;
+                .await
+                .unwrap();
         } else {
             self.update_frontend_cursor(document_id, peer_id).await;
         }
@@ -538,17 +537,6 @@ impl Client {
                 let doc_info = self.active_documents.get_mut(&document_id).unwrap();
 
                 doc_info.selections.insert(peer_id, selection);
-
-                self.update_frontend_selection(&document_id, Some(peer_id))
-                    .await;
-            }
-            BackendMessage::UnsetSelection {
-                document_id,
-                peer_id,
-            } => {
-                let doc_info = self.active_documents.get_mut(&document_id).unwrap();
-
-                doc_info.selections.remove(&peer_id);
 
                 self.update_frontend_selection(&document_id, Some(peer_id))
                     .await;

@@ -161,7 +161,27 @@ impl Client {
     }
 
     async fn broadcast_selection_update(&self, document_id: &str) {
-        todo!()
+        let doc_info = self.active_documents.get(document_id).unwrap();
+        let peer_id = self.doc.peer_id();
+
+        self.channels
+            .outgoing_tx
+            .send(OutgoingMessage::BackendMessage(
+                if let Some(ref selection) = doc_info.selection {
+                    BackendMessage::SelectionUpdate {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                        selection: selection.clone(),
+                    }
+                } else {
+                    BackendMessage::UnsetSelection {
+                        document_id: document_id.to_owned(),
+                        peer_id,
+                    }
+                },
+            ))
+            .await
+            .unwrap();
     }
 
     async fn broadcast_all_data(&mut self) {

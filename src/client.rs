@@ -34,7 +34,7 @@ pub struct Client {
     doc: loro::LoroDoc,
     channels: Channels,
     main_channel_rx: Receiver<MainTaskMessage>,
-    active_documents: HashMap<String, DocumentInfo>,
+    active_documents: HashMap<DocumentID, DocumentInfo>,
 }
 
 impl Client {
@@ -59,12 +59,11 @@ impl Client {
 
                     self.broadcast_cursor_update(&id).await;
                     for peer_id in doc_info.cursors.keys() {
-                        self.update_frontend_cursor(&id, Some(*peer_id), false)
-                            .await;
+                        self.update_frontend_cursor(&id, Some(*peer_id)).await;
                     }
-                    for peer_id in doc_info.marks.keys() {
-                        self.update_frontend_cursor(&id, Some(*peer_id), true).await;
-                    }
+                    // for peer_id in doc_info.marks.keys() {
+                    //     self.update_frontend_cursor(&id, Some(*peer_id), true).await;
+                    // }
                 }
             }
         }
@@ -154,32 +153,11 @@ impl Client {
                         document_id: document_id.to_owned(),
                         peer_id,
                         cursor: cursor.clone(),
-                        mark: false,
                     },
                 ))
                 .await
                 .unwrap();
         }
-
-        self.channels
-            .outgoing_tx
-            .send(OutgoingMessage::BackendMessage(
-                if let Some(ref mark) = doc_info.mark {
-                    BackendMessage::CursorUpdate {
-                        document_id: document_id.to_owned(),
-                        peer_id,
-                        cursor: mark.clone(),
-                        mark: true,
-                    }
-                } else {
-                    BackendMessage::UnsetMark {
-                        document_id: document_id.to_owned(),
-                        peer_id,
-                    }
-                },
-            ))
-            .await
-            .unwrap();
     }
 
     async fn broadcast_all_data(&mut self) {
@@ -233,69 +211,60 @@ impl Client {
     }
 
     // TODO Refactor
-    async fn update_frontend_cursor(
-        &self,
-        document_id: &str,
-        peer_id: Option<loro::PeerID>,
-        mark: bool,
-    ) {
+    async fn update_frontend_cursor(&self, document_id: &str, peer_id: Option<loro::PeerID>) {
         let doc_info = self.active_documents.get(document_id).unwrap();
-
-        if mark {
-            let mark = if let Some(peer_id) = peer_id {
-                doc_info.marks.get(&peer_id)
-            } else {
-                doc_info.mark.as_ref()
-            };
-
-            if let Some(mark) = mark {
-                let pos = self.doc.get_cursor_pos(mark).unwrap().current.pos;
-                self.channels
-                    .stdout_tx
-                    .send(ClientMessage::SetCursor {
-                        document_id: document_id.to_owned(),
-                        peer_id,
-                        location: pos,
-                        mark: true,
-                    })
-                    .await
-                    .unwrap();
-            } else {
-                self.channels
-                    .stdout_tx
-                    .send(ClientMessage::UnsetMark {
-                        document_id: document_id.to_owned(),
-                        peer_id,
-                    })
-                    .await
-                    .unwrap();
-            }
+        let cursor = if let Some(peer_id) = peer_id {
+            doc_info.cursors.get(&peer_id)
         } else {
-            let Some(cursor) = peer_id
-                .and_then(|id| {
-                    if mark {
-                        doc_info.marks.get(&id)
-                    } else {
-                        doc_info.cursors.get(&id)
-                    }
-                })
-                .or(doc_info.cursor.as_ref())
-            else {
-                return;
-            };
+            doc_info.cursor.as_ref()
+        };
+        let Some(cursor) = cursor else {
+            error!(
+                "Attempted to update non-existent cursor for {} for peer (is this expected?): {:?}",
+                document_id, peer_id
+            );
+            return;
+        };
 
-            let pos = self.doc.get_cursor_pos(cursor).unwrap().current.pos;
-            self.channels
-                .stdout_tx
-                .send(ClientMessage::SetCursor {
-                    document_id: document_id.to_owned(),
-                    peer_id,
-                    location: pos,
-                    mark,
-                })
-                .await
-                .unwrap();
-        }
+        let pos = self.doc.get_cursor_pos(cursor).unwrap().current.pos;
+        self.channels
+            .stdout_tx
+            .send(ClientMessage::SetCursor {
+                document_id: document_id.to_owned(),
+                peer_id,
+                location: pos,
+            })
+            .await
+            .unwrap();
+
+        // let mark = if let Some(peer_id) = peer_id {
+        //     doc_info.marks.get(&peer_id)
+        // } else {
+        //     doc_info.mark.as_ref()
+        // };
+
+        //          if let Some(mark) = mark {
+        //     let pos = self.doc.get_cursor_pos(mark).unwrap().current.pos;
+        //     self.channels
+        //         .stdout_tx
+        //         .send(ClientMessage::SetCursor {
+        //             document_id: document_id.to_owned(),
+        //             peer_id,
+        //             location: pos,
+        //             mark: true,
+        //         })
+        //         .await
+        //         .unwrap();
+        // } else {
+        //     self.channels
+        //         .stdout_tx
+        //         .send(ClientMessage::UnsetMark {
+        //             document_id: document_id.to_owned(),
+        //             peer_id,
+        //         })
+        //         .await
+        //         .unwrap();
+        // }
     }
 
     async fn handle_client_message(&mut self, message: ClientMessage) {
@@ -440,19 +409,24 @@ impl Client {
             ClientMessage::SetCursor {
                 document_id,
                 location,
-                mark,
                 ..
             } => {
                 let doc_info = self.active_documents.get_mut(&document_id).unwrap();
                 let text = self.doc.get_text(document_id.as_str());
 
-                if mark {
-                    doc_info.mark = text.get_cursor(location, Default::default());
-                } else {
-                    doc_info.cursor = text.get_cursor(location, Default::default());
-                }
+                // doc_info.mark = text.get_cursor(location, Default::default());
+
+                doc_info.cursor = text.get_cursor(location, Default::default());
 
                 self.broadcast_cursor_update(&document_id).await;
+            }
+            ClientMessage::SetSelection {
+                document_id,
+                peer_id,
+                point,
+                mark,
+            } => {
+                todo!()
             }
             ClientMessage::UnsetMark {
                 document_id,
@@ -468,6 +442,12 @@ impl Client {
 
                 self.broadcast_cursor_update(&document_id).await;
             }
+            ClientMessage::UnsetSelection {
+                document_id,
+                peer_id,
+            } => {
+                todo!()
+            }
         }
     }
 
@@ -481,27 +461,29 @@ impl Client {
                 document_id,
                 peer_id,
                 cursor,
-                mark,
                 ..
             } => {
-                info!(
-                    "Received cursor update for document {}; mark: {}",
-                    document_id, mark
-                );
+                info!("Received cursor update for document {}", document_id,);
 
                 let Some(doc_info) = self.active_documents.get_mut(&document_id) else {
                     // Document not active.
                     return;
                 };
 
-                if mark {
-                    doc_info.marks.insert(peer_id, cursor);
-                } else {
-                    doc_info.cursors.insert(peer_id, cursor);
-                }
+                // doc_info.marks.insert(peer_id, cursor);
 
-                self.update_frontend_cursor(&document_id, Some(peer_id), mark)
+                doc_info.cursors.insert(peer_id, cursor);
+
+                self.update_frontend_cursor(&document_id, Some(peer_id))
                     .await;
+            }
+            BackendMessage::SelectionUpdate {
+                document_id,
+                peer_id,
+                point,
+                mark,
+            } => {
+                todo!()
             }
             BackendMessage::UnsetMark {
                 document_id,
@@ -519,8 +501,14 @@ impl Client {
 
                 doc_info.marks.remove(&peer_id);
 
-                self.update_frontend_cursor(&document_id, Some(peer_id), true)
-                    .await;
+                // self.update_frontend_cursor(&document_id, Some(peer_id), true)
+                //     .await;
+            }
+            BackendMessage::UnsetSelection {
+                document_id,
+                peer_id,
+            } => {
+                todo!()
             }
         }
     }

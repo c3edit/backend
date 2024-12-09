@@ -4,6 +4,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
+pub(crate) type DocumentID = String;
 // I hate Rust sometimes.
 pub(crate) type WriteSocket = tokio_serde::SymmetricallyFramed<
     FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
@@ -46,13 +47,22 @@ pub(crate) enum ClientMessage {
     },
     SetCursor {
         document_id: String,
-        // This field should be none for the client's cursor.
+        /// This field should be omitted for the client's cursor.
         peer_id: Option<loro::PeerID>,
         location: usize,
-        #[serde(default)]
-        mark: bool,
+    },
+    SetSelection {
+        document_id: String,
+        /// This field should be omitted for the client's selection.
+        peer_id: Option<loro::PeerID>,
+        point: usize,
+        mark: usize,
     },
     UnsetMark {
+        document_id: String,
+        peer_id: Option<loro::PeerID>,
+    },
+    UnsetSelection {
         document_id: String,
         peer_id: Option<loro::PeerID>,
     },
@@ -75,9 +85,18 @@ pub(crate) enum BackendMessage {
         document_id: String,
         peer_id: loro::PeerID,
         cursor: loro::cursor::Cursor,
-        mark: bool,
+    },
+    SelectionUpdate {
+        document_id: String,
+        peer_id: loro::PeerID,
+        point: loro::cursor::Cursor,
+        mark: loro::cursor::Cursor,
     },
     UnsetMark {
+        document_id: String,
+        peer_id: loro::PeerID,
+    },
+    UnsetSelection {
         document_id: String,
         peer_id: loro::PeerID,
     },

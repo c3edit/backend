@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(io::stderr)
+        .with_ansi(false)
         .init();
 
     color_eyre::config::HookBuilder::new()

@@ -37,7 +37,9 @@ async fn main() -> Result<()> {
         .with_writer(io::stderr)
         .init();
 
-    color_eyre::install()?;
+    color_eyre::config::HookBuilder::new()
+        .theme(color_eyre::config::Theme::new())
+        .install()?;
 
     let addr = format!("{}:{}", args.address, args.port);
     let listener = TcpListener::bind(&addr).await.unwrap();
